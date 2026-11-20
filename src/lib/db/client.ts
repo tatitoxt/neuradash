@@ -22,6 +22,8 @@ export function getPool(): pg.Pool {
       connectionString: databaseUrl(),
       max: Number(process.env.DATABASE_POOL_MAX ?? 10),
     });
+    // Idle clients can be terminated by the server; pg removes them, the pool must not crash the process.
+    globals.__neuradashPool.on("error", (err) => console.error(`[db] idle client error: ${err.message}`));
   }
   return globals.__neuradashPool;
 }
