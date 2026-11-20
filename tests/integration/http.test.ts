@@ -106,6 +106,14 @@ describe("ingest", () => {
   });
 });
 
+describe("event listing", () => {
+  it("accepts fractional limits", async () => {
+    const res = await eventsRoute.GET(request("/api/events?limit=2.5", { cookie: acmeAdmin }));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { events: unknown[] }).events).toHaveLength(2);
+  });
+});
+
 describe("cross-tenant isolation over HTTP", () => {
   it("tenant A cannot read tenant B's event by id", async () => {
     const res = await ingest(seeded.globex!.apiKey, { type: "signup", source: "globex-secret" });

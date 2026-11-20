@@ -141,3 +141,16 @@ describe("session revocation", () => {
     expect(await closed).toBe(CLOSE_SESSION_INVALID);
   });
 });
+
+describe("robustness", () => {
+  it("survives malformed cookies and oversized frames", async () => {
+    await expect(connect("x=%")).rejects.toThrow("HTTP 401");
+    const c = await connect(await token("viewer@acme.test"));
+    await c.next((m) => m.type === "ready");
+    const closed = new Promise<number>((r) => c.ws.on("close", (code) => r(code)));
+    c.ws.send("x".repeat(10_000));
+    expect(await closed).toBe(1009);
+    const again = await connect(await token("viewer@acme.test"));
+    expect(await again.next((m) => m.type === "ready")).toMatchObject({ tenant: "acme" });
+  });
+});
