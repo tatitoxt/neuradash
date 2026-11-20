@@ -17,6 +17,7 @@
     "test:integration": "vitest run --project integration",
     "test:e2e": "playwright test",
     "db:generate": "drizzle-kit generate",
+    "db:create": "tsx scripts/db-create.ts",
     "db:setup": "tsx scripts/db-setup.ts",
     "db:seed": "tsx scripts/seed.ts",
     "generate:events": "tsx scripts/generate-events.ts"
