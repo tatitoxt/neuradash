@@ -13,12 +13,19 @@ export function LoginForm() {
     setPending(true);
     setError(null);
     const form = new FormData(event.currentTarget);
-    const res = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: form.get("email"), password: form.get("password") }),
-    });
-    setPending(false);
+    let res: Response;
+    try {
+      res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: form.get("email"), password: form.get("password") }),
+      });
+    } catch {
+      setError("Network error, please try again");
+      return;
+    } finally {
+      setPending(false);
+    }
     if (res.ok) {
       router.replace("/dashboard");
       router.refresh();
