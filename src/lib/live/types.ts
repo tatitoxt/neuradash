@@ -29,6 +29,8 @@ export type MetricsDTO = {
   bucketMs: number;
   rangeMs: number;
   generatedAt: string;
+  /** Highest event id included in this snapshot; live events above it are applied on top. */
+  lastEventId: number;
   summary: Summary;
   series: SeriesPoint[];
   /** Distinct sources in range; lets the client keep the "sources" KPI exact while live. */
