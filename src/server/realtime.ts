@@ -126,6 +126,8 @@ export function createRealtime(opts: RealtimeOptions): Realtime {
     byTenant.set(session.tenantId, set);
 
     ws.on("pong", () => (client.alive = true));
+    // e.g. a frame above maxPayload; ws closes the socket itself, we only need to observe it.
+    ws.on("error", (err) => log(`socket error: ${err.message}`));
     ws.on("close", () => {
       set.delete(client);
       if (set.size === 0) byTenant.delete(session.tenantId);
@@ -134,14 +136,22 @@ export function createRealtime(opts: RealtimeOptions): Realtime {
       const msg = parseClientMessage(data);
       if (!msg) return send(ws, { type: "error", code: "bad_message" });
       if (msg.type === "resume") {
-        const { events, truncated } = await listEventsAfter(session.tenantId, msg.lastEventId);
-        send(ws, { type: "backfill", events, truncated });
+        try {
+          const { events, truncated } = await listEventsAfter(session.tenantId, msg.lastEventId);
+          send(ws, { type: "backfill", events, truncated });
+        } catch (err) {
+          log(`backfill failed: ${(err as Error).message}`);
+          send(ws, { type: "error", code: "backfill_failed" });
+        }
       }
     });
 
-    void latestEventId(session.tenantId).then((lastEventId) =>
-      send(ws, { type: "ready", tenant: session.tenantSlug, lastEventId }),
-    );
+    void latestEventId(session.tenantId)
+      .then((lastEventId) => send(ws, { type: "ready", tenant: session.tenantSlug, lastEventId }))
+      .catch((err) => {
+        log(`ready failed: ${(err as Error).message}`);
+        ws.close(1011, "server error");
+      });
   }
 
   const heartbeat = setInterval(() => {
@@ -154,10 +164,13 @@ export function createRealtime(opts: RealtimeOptions): Realtime {
         c.alive = false;
         c.ws.ping();
         // Logout, expiry or a removed membership disconnects live sockets too.
-        void getSession(c.token).then((s) => {
-          if (!s || s.tenantId !== c.session.tenantId) c.ws.close(CLOSE_SESSION_INVALID, "session invalid");
-          else c.session = s;
-        });
+        void getSession(c.token)
+          .then((s) => {
+            if (!s || s.tenantId !== c.session.tenantId) c.ws.close(CLOSE_SESSION_INVALID, "session invalid");
+            else c.session = s;
+          })
+          // Keep the socket on a transient DB error; the next heartbeat re-checks the session.
+          .catch((err) => log(`session check failed: ${(err as Error).message}`));
       }
     }
   }, opts.heartbeatMs ?? 30_000);
@@ -173,7 +186,8 @@ export function createRealtime(opts: RealtimeOptions): Realtime {
         return true;
       }
       const token = sessionTokenFrom({ cookie: req.headers.cookie });
-      void getSession(token)
+      void Promise.resolve()
+        .then(() => getSession(token))
         .then((session) => {
           if (!session || !token) return reject(socket, 401, "Unauthorized");
           wss.handleUpgrade(req, socket, head, (ws) => register(ws, token, session));
