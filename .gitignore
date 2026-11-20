@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+
+# Next.js / build output
+.next/
+out/
+build/
+dist/
+next-env.d.ts
+*.tsbuildinfo
+
+# testing
+coverage/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# env files (copy .env.example)
+.env
+.env.*
+!.env.example
+
+# logs and OS files
+*.log
+npm-debug.log*
+.DS_Store
