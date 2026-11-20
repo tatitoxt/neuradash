@@ -129,8 +129,8 @@ tests/unit, tests/integration, e2e/
 
 | Suite | Command | What it covers | Count |
 | --- | --- | --- | --- |
-| Unit (Vitest) | `npm test` | password hashing, tokens, ingest validation, range buckets, live reducer, cookies, origin check, rate limiter, reconnect backoff, seed PRNG | 28 |
-| Integration (Vitest + real Postgres) | `npm run test:integration` | RLS as the app role with raw SQL; route handlers for login/logout, ingest, events, metrics and admin keys; cross-tenant reads and key revocation; WebSocket auth, tenant-scoped broadcast, backfill and logout disconnect | 29 |
+| Unit (Vitest) | `npm test` | password hashing, tokens, ingest validation, range buckets, live reducer, cookies, origin check, rate limiter, reconnect backoff, seed PRNG | 30 |
+| Integration (Vitest + real Postgres) | `npm run test:integration` | RLS as the app role with raw SQL; route handlers for login/logout, ingest, events, metrics and admin keys; cross-tenant reads and key revocation; WebSocket auth, tenant-scoped broadcast, backfill and logout disconnect | 31 |
 | E2E (Playwright, Chromium) | `npm run build && npm run test:e2e` | real production server in a browser: login, live update after ingest, backfill after a dropped socket, cross-tenant HTTP and WebSocket denial, viewer denied admin, admin key lifecycle | 12 |
 
 Counts are from running the commands above in this repository; re-run them to reproduce.
