@@ -1,0 +1,56 @@
+# Local demo stack. All credentials below are local-only placeholders, not secrets.
+name: neuradash
+
+x-db-env: &db-env
+  DATABASE_URL: postgres://neuradash_app:app-password-change-me@db:5432/neuradash
+  DATABASE_OWNER_URL: postgres://postgres:postgres@db:5432/neuradash
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: neuradash
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d neuradash"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # One-shot: creates the RLS-restricted app role, applies migrations, seeds synthetic data once.
+  migrate:
+    build: .
+    image: neuradash:local
+    command: ["sh", "-c", "npm run db:setup && npm run db:seed"]
+    environment: *db-env
+    depends_on:
+      db: { condition: service_healthy }
+
+  app:
+    image: neuradash:local
+    environment:
+      <<: *db-env
+      COOKIE_SECURE: "false"
+    ports: ["3000:3000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+  # Synthetic telemetry for both demo tenants so the dashboard moves on its own.
+  generator:
+    image: neuradash:local
+    command: ["npm", "run", "generate:events"]
+    environment:
+      NEURADASH_URL: http://app:3000
+      EVENTS_PER_SECOND: "1"
+    depends_on:
+      app: { condition: service_healthy }
+
+volumes:
+  pgdata:
