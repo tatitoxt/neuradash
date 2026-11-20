@@ -16,7 +16,12 @@ export function parseCookies(header: string | null | undefined): Record<string, 
     const i = part.indexOf("=");
     if (i < 0) continue;
     const key = part.slice(0, i).trim();
-    if (key && !(key in out)) out[key] = decodeURIComponent(part.slice(i + 1).trim());
+    if (!key || key in out) continue;
+    try {
+      out[key] = decodeURIComponent(part.slice(i + 1).trim());
+    } catch {
+      // Malformed percent-encoding: ignore this cookie rather than fail the request.
+    }
   }
   return out;
 }
@@ -63,11 +68,30 @@ export async function requireSession(
 export async function readJson(req: Request, maxBytes: number): Promise<{ ok: true; body: unknown } | { ok: false; response: Response }> {
   const length = Number(req.headers.get("content-length") ?? 0);
   if (length > maxBytes) return { ok: false, response: apiError(413, "payload_too_large") };
-  const text = await req.text();
-  if (Buffer.byteLength(text) > maxBytes) return { ok: false, response: apiError(413, "payload_too_large") };
+  const text = await readTextCapped(req, maxBytes);
+  if (text === null) return { ok: false, response: apiError(413, "payload_too_large") };
   try {
     return { ok: true, body: JSON.parse(text) };
   } catch {
     return { ok: false, response: apiError(400, "invalid_json") };
   }
+}
+
+/** Reads the body as UTF-8, aborting as soon as it exceeds `maxBytes` (also for chunked bodies). */
+async function readTextCapped(req: Request, maxBytes: number): Promise<string | null> {
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
