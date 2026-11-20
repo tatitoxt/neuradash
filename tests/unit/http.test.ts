@@ -76,6 +76,7 @@ describe("readJson", () => {
 
   it("parses bodies within the limit and rejects invalid JSON", async () => {
     expect(await readJson(chunked(['{"a":', "1}"]), 64)).toEqual({ ok: true, body: { a: 1 } });
+    expect(await readJson(chunked(['\uFEFF{"a":1}']), 64)).toEqual({ ok: true, body: { a: 1 } });
     const bad = await readJson(chunked(["{nope"]), 64);
     expect(!bad.ok && bad.response.status).toBe(400);
   });

@@ -93,5 +93,6 @@ async function readTextCapped(req: Request, maxBytes: number): Promise<string | 
     }
     chunks.push(value);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  // TextDecoder strips a leading BOM, matching Request.text().
+  return new TextDecoder().decode(Buffer.concat(chunks));
 }
