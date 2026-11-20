@@ -25,6 +25,9 @@ export function toDTO(row: EventRow): EventDTO {
  */
 export async function insertEvents(tenantId: string, input: IngestEvent[]): Promise<EventDTO[]> {
   return withTenant(tenantId, async (tx) => {
+    // Serialize a tenant's writes so its ids become visible in increasing order; otherwise a
+    // concurrent insert could commit a lower id after a client resumed past a higher one.
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${tenantId}, 0))`);
     const rows = await tx
       .insert(events)
       .values(input.map((e) => ({ ...e, tenantId })))
@@ -63,7 +66,7 @@ export async function listRecentEvents(
   tenantId: string,
   opts: { limit?: number; beforeId?: number } = {},
 ): Promise<EventDTO[]> {
-  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 50), 1), 200);
   const rows = await withTenant(tenantId, (tx) =>
     tx
       .select()
