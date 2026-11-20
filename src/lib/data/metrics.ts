@@ -11,23 +11,28 @@ export async function getMetrics(tenantId: string, range: RangeKey, now = new Da
   const from = new Date(now.getTime() - rangeMs);
   const bucket = `${bucketMs / 1000} seconds`;
 
-  const [summaryRows, bucketRows] = await withTenant(tenantId, async (tx) => {
+  const [lastEventId, summaryRows, bucketRows] = await withTenant(tenantId, async (tx) => {
+    // Pin the snapshot to an id so live events can be applied on top without double counting.
+    const max = await tx.execute<{ id: string | null }>(
+      sql`select max(id) as id from events where tenant_id = ${tenantId}`,
+    );
+    const maxId = Number(max.rows[0]?.id ?? 0);
     const summary = await tx.execute<SummaryRow>(sql`
       select count(*) as events,
              count(*) filter (where type = 'error') as errors,
              coalesce(sum(value) filter (where type = 'purchase'), 0) as revenue,
              array_agg(distinct source) as sources
       from events
-      where tenant_id = ${tenantId} and occurred_at >= ${from} and occurred_at <= ${now}`);
+      where tenant_id = ${tenantId} and occurred_at >= ${from} and occurred_at <= ${now} and id <= ${maxId}`);
     const buckets = await tx.execute<BucketRow>(sql`
       select date_bin(${bucket}::interval, occurred_at, timestamptz 'epoch') as bucket,
              count(*) as events,
              count(*) filter (where type = 'error') as errors,
              coalesce(sum(value) filter (where type = 'purchase'), 0) as revenue
       from events
-      where tenant_id = ${tenantId} and occurred_at >= ${from} and occurred_at <= ${now}
+      where tenant_id = ${tenantId} and occurred_at >= ${from} and occurred_at <= ${now} and id <= ${maxId}
       group by 1 order by 1`);
-    return [summary.rows, buckets.rows] as const;
+    return [maxId, summary.rows, buckets.rows] as const;
   });
 
   const byBucket = new Map<number, SeriesPoint>();
@@ -45,6 +50,7 @@ export async function getMetrics(tenantId: string, range: RangeKey, now = new Da
     rangeMs,
     bucketMs,
     generatedAt: now.toISOString(),
+    lastEventId,
     summary: {
       events: Number(s?.events ?? 0),
       errors: Number(s?.errors ?? 0),
