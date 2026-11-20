@@ -1,0 +1,73 @@
+import { getSession, SESSION_COOKIE, type Session } from "@/lib/auth/session";
+import type { Role } from "@/lib/db/schema";
+
+export function json(body: unknown, status = 200, headers: HeadersInit = {}): Response {
+  return Response.json(body, { status, headers: { "Cache-Control": "no-store", ...headers } });
+}
+
+export function apiError(status: number, error: string, message?: string): Response {
+  return json({ error, ...(message ? { message } : {}) }, status);
+}
+
+export function parseCookies(header: string | null | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(";")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    const key = part.slice(0, i).trim();
+    if (key && !(key in out)) out[key] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+
+export function sessionTokenFrom(headers: Headers | { cookie?: string | undefined }): string | undefined {
+  const cookie = headers instanceof Headers ? headers.get("cookie") : headers.cookie;
+  return parseCookies(cookie)[SESSION_COOKIE];
+}
+
+/**
+ * CSRF defence for cookie-authenticated mutations: the browser-supplied Origin must match
+ * the Host the request was sent to. Combined with SameSite=Lax session cookies.
+ */
+export function isSameOrigin(headers: Headers | { origin?: string | undefined; host?: string | undefined }): boolean {
+  const get = (name: "origin" | "host") => (headers instanceof Headers ? headers.get(name) : headers[name]) ?? null;
+  const origin = get("origin");
+  const host = get("host");
+  if (!origin || !host) return false;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
+type Guard = { ok: true; session: Session } | { ok: false; response: Response };
+
+/** Authenticates a request by session cookie and optionally requires a role and same-origin. */
+export async function requireSession(
+  req: Request,
+  opts: { role?: Role; mutation?: boolean } = {},
+): Promise<Guard> {
+  if (opts.mutation && !isSameOrigin(req.headers)) {
+    return { ok: false, response: apiError(403, "forbidden", "cross-origin request rejected") };
+  }
+  const session = await getSession(sessionTokenFrom(req.headers));
+  if (!session) return { ok: false, response: apiError(401, "unauthorized") };
+  if (opts.role === "admin" && session.role !== "admin") {
+    return { ok: false, response: apiError(403, "forbidden", "admin role required") };
+  }
+  return { ok: true, session };
+}
+
+export async function readJson(req: Request, maxBytes: number): Promise<{ ok: true; body: unknown } | { ok: false; response: Response }> {
+  const length = Number(req.headers.get("content-length") ?? 0);
+  if (length > maxBytes) return { ok: false, response: apiError(413, "payload_too_large") };
+  const text = await req.text();
+  if (Buffer.byteLength(text) > maxBytes) return { ok: false, response: apiError(413, "payload_too_large") };
+  try {
+    return { ok: true, body: JSON.parse(text) };
+  } catch {
+    return { ok: false, response: apiError(400, "invalid_json") };
+  }
+}
