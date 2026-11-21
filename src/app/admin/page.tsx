@@ -3,6 +3,7 @@ import { requirePageSession } from "@/lib/auth/current";
 import { listApiKeys } from "@/lib/data/api-keys";
 import { listMembers } from "@/lib/data/members";
 import { ApiKeysPanel } from "./api-keys-panel";
+import { MembersPanel } from "./members-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -26,19 +27,7 @@ export default async function AdminPage() {
       <main className="mx-auto max-w-5xl space-y-6 p-6">
         <h1 className="text-xl font-semibold">Admin · {session.tenantName}</h1>
         <ApiKeysPanel initialKeys={keys} />
-        <section className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-          <h2 className="mb-3 text-sm font-medium text-slate-300">Members</h2>
-          <ul className="divide-y divide-slate-800 text-sm">
-            {members.map((m) => (
-              <li key={m.userId} className="flex justify-between py-2">
-                <span>
-                  {m.name} <span className="text-slate-500">{m.email}</span>
-                </span>
-                <span className="text-xs uppercase text-slate-400">{m.role}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
+        <MembersPanel initialMembers={members} selfId={session.userId} />
       </main>
     </>
   );

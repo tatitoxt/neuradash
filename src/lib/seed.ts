@@ -111,5 +111,15 @@ export async function seedDemo(owner: pg.Pool | pg.Client, opts: SeedOptions = {
     }
     result[t.slug] = { tenantId: tenant!.id, apiKey: t.apiKey };
   }
+
+  // Cross-tenant demo user for the tenant switcher: admin in Acme, viewer in Globex.
+  const [multiUser] = await db
+    .insert(schema.users)
+    .values({ email: "multi@demo.test", name: "Morgan Multi", passwordHash })
+    .returning();
+  await db.insert(schema.memberships).values([
+    { tenantId: result["acme"]!.tenantId, userId: multiUser!.id, role: "admin" },
+    { tenantId: result["globex"]!.tenantId, userId: multiUser!.id, role: "viewer" },
+  ]);
   return result;
 }

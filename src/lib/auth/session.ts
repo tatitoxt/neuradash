@@ -91,6 +91,36 @@ export async function getSession(token: string | undefined | null): Promise<Sess
   return { ...row, role: member.role, tenantSlug: member.slug, tenantName: member.tenantName };
 }
 
+/**
+ * Points an existing session at another tenant the user belongs to. Role keeps
+ * being re-resolved from `memberships` on every request, so switching into a
+ * tenant where the user is a viewer drops admin rights immediately.
+ */
+export async function switchTenant(token: string | undefined | null, tenantSlug: string): Promise<Session | null> {
+  if (!token || !tenantSlug || tenantSlug.length > 100) return null;
+  const db = getDb();
+  const [row] = await db
+    .select({ sessionId: sessions.id, userId: sessions.userId })
+    .from(sessions)
+    .innerJoin(users, eq(users.id, sessions.userId))
+    .where(and(eq(sessions.tokenHash, sha256Hex(token)), gt(sessions.expiresAt, sql`now()`)))
+    .limit(1);
+  if (!row) return null;
+
+  const [membership] = await withUser(row.userId, (tx) =>
+    tx
+      .select({ tenantId: memberships.tenantId })
+      .from(memberships)
+      .innerJoin(tenants, eq(tenants.id, memberships.tenantId))
+      .where(and(eq(memberships.userId, row.userId), eq(tenants.slug, tenantSlug)))
+      .limit(1),
+  );
+  if (!membership) return null;
+
+  await db.update(sessions).set({ tenantId: membership.tenantId }).where(eq(sessions.id, row.sessionId));
+  return getSession(token);
+}
+
 export async function deleteSession(token: string | undefined | null): Promise<void> {
   if (!token) return;
   await getDb().delete(sessions).where(eq(sessions.tokenHash, sha256Hex(token)));

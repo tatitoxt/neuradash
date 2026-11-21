@@ -27,8 +27,10 @@ NeuraDash is a small, complete implementation of that story: ingest → persist 
 - **Authenticated WebSocket** at `/ws`: requires a valid session cookie and same-origin `Origin`; the channel is the session's tenant (query parameters are ignored). Sockets are closed at the next heartbeat (30 s) after logout or session expiry.
 - **Reconnect + backfill**: the browser reconnects with jittered exponential backoff and sends `resume { lastEventId }`; the server replies with the missed events (capped at 500, after which the client resyncs aggregates).
 - **Dashboard**: KPI cards (events, error rate, revenue, active sources), event-volume and revenue charts (Recharts), live event feed and a 15m / 1h / 24h / 7d range filter.
-- **Admin page**: create (shown once, with optional 30/90/365-day expiry and a per-minute ingest limit) and revoke ingest API keys; list tenant members.
-- **Synthetic data**: deterministic seed (2 tenants, 3 users, 6,000 events per tenant over 7 days) and a generator that keeps posting events through the public ingest API.
+- **Tenant switcher**: `/api/me` lists every membership; a header dropdown (visible with 2+ tenants) calls `POST /api/auth/switch-tenant` to re-point the session at another tenant — role is re-resolved per request, so switching from an admin tenant to a viewer tenant drops admin rights immediately.
+- **Member administration** (admin only): `GET/POST /api/admin/members` lists members and invites by email — an existing account joins the tenant directly, a new one is created with a temporary password shown once (no mailer). `PATCH/DELETE /api/admin/members/{id}` change roles or remove members (sessions in that tenant are killed); admins cannot change or remove themselves.
+- **Admin page**: create (shown once, with optional 30/90/365-day expiry and a per-minute ingest limit) and revoke ingest API keys; invite members, change roles and remove members.
+- **Synthetic data**: deterministic seed (2 tenants, 4 users — `multi@demo.test` belongs to both tenants to demo the switcher — 6,000 events per tenant over 7 days) and a generator that keeps posting events through the public ingest API.
 - **`docker compose up`** runs Postgres, migrations + seed, the app and the generator.
 
 ## Quickstart (Docker)
@@ -130,7 +132,7 @@ tests/unit, tests/integration, e2e/
 | Suite | Command | What it covers | Count |
 | --- | --- | --- | --- |
 | Unit (Vitest) | `npm test` | password hashing, tokens, ingest validation, range buckets, live reducer, cookies, origin check, rate limiter, reconnect backoff, seed PRNG | 30 |
-| Integration (Vitest + real Postgres) | `npm run test:integration` | RLS as the app role with raw SQL; route handlers for login/logout, ingest, events, metrics and admin keys; cross-tenant reads, key revocation, expiry/scopes and per-key rate limits; WebSocket auth, tenant-scoped broadcast, backfill and logout disconnect | 33 |
+| Integration (Vitest + real Postgres) | `npm run test:integration` | RLS as the app role with raw SQL; route handlers for login/logout, ingest, events, metrics and admin keys; cross-tenant reads, key revocation, expiry/scopes and per-key rate limits; tenant switching and member admin (invite, role change, removal, self-guards); WebSocket auth, tenant-scoped broadcast, backfill and logout disconnect | 41 |
 | E2E (Playwright, Chromium) | `npm run build && npm run test:e2e` | real production server in a browser: login, live update after ingest, backfill after a dropped socket, cross-tenant HTTP and WebSocket denial, viewer denied admin, admin key lifecycle | 12 |
 
 Counts are from running the commands above in this repository; re-run them to reproduce.
@@ -155,8 +157,8 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 - **Aggregates are computed from raw events** with SQL on each request; there are no rollup tables, partitioning or retention policy.
 - **Live chart updates are approximate between resyncs**: live events update KPIs and the current bucket client-side; the dashboard re-fetches exact aggregates every 60 s and after a reconnect.
 - **Login rate limiting is in-memory** per process (resets on restart, not shared across instances).
-- **No signup, password reset, MFA, user management or tenant switcher UI.** A session belongs to one tenant; the login API accepts an optional `tenant` slug for users with several memberships, but the demo users have one each.
-- **`users` and `sessions` are global tables without RLS** (they are needed before a tenant is known); the app role can read but not modify `users`.
+- **No signup, password reset, MFA or self-service profile.** Invites are the only way in: no mailer exists, so the temporary password is shown once to the inviting admin and must be handed over manually.
+- **`users` and `sessions` are global tables without RLS** (they are needed before a tenant is known); the app role can read `users` and insert new rows for invites, but cannot update or delete them. Membership writes stay tenant-scoped by RLS.
 - **API keys have a single scope today** (`ingest`), so scoping is forward-compatible structure, not fine-grained authorization yet.
 - **Docker image still ships `tsx` and the prod `node_modules`** (the custom server and db scripts run through it); devDependencies are excluded via the multi-stage build. It is meant for local demos, not production.
 - **`npm audit`** reports 4 moderate advisories in `drizzle-kit`'s transitive `@esbuild-kit/*` packages (dev-only migration generator, not used at runtime). There are no high or critical findings; CI fails on high/critical.
@@ -164,7 +166,6 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 
 ## Roadmap
 
-- Tenant switcher for users with several memberships, plus member invite/role management for admins.
 - Rollup tables (per minute/hour) and time-based partitioning for `events`, with a retention job.
 - Additional API key scopes once endpoints beyond ingest exist.
 - Shared rate limiting (Postgres or Redis) and a multi-instance test for the realtime fan-out.
