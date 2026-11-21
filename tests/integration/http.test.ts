@@ -8,6 +8,9 @@ import * as eventRoute from "@/app/api/events/[id]/route";
 import * as metricsRoute from "@/app/api/metrics/route";
 import * as keysRoute from "@/app/api/admin/api-keys/route";
 import * as keyRoute from "@/app/api/admin/api-keys/[id]/route";
+import * as membersRoute from "@/app/api/admin/members/route";
+import * as memberRoute from "@/app/api/admin/members/[id]/route";
+import * as switchRoute from "@/app/api/auth/switch-tenant/route";
 import { DEMO_PASSWORD } from "@/lib/seed";
 import { createApiKey } from "@/lib/data/api-keys";
 import { closeDb } from "@/lib/db/client";
@@ -221,5 +224,135 @@ describe("roles", () => {
       request("/api/admin/api-keys", { method: "POST", cookie: acmeAdmin, body: JSON.stringify({ name: "csrf" }) }),
     );
     expect(res.status).toBe(403);
+  });
+});
+
+describe("tenant switching", () => {
+  it("lets a multi-tenant user switch and resolves the role per tenant", async () => {
+    const cookie = await loginAs("multi@demo.test");
+    const me = await meRoute.GET(request("/api/me", { cookie }));
+    expect(me.status).toBe(200);
+    const meBody = await me.json();
+    expect(meBody.tenant.slug).toBe("acme");
+    expect(meBody.tenants).toHaveLength(2);
+
+    const res = await switchRoute.POST(
+      request("/api/auth/switch-tenant", sameOrigin({ method: "POST", cookie, body: JSON.stringify({ tenant: "globex" }) })),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ tenant: { slug: "globex" }, role: "viewer" });
+
+    const me2 = await meRoute.GET(request("/api/me", { cookie }));
+    expect((await me2.json()).tenant.slug).toBe("globex");
+  });
+
+  it("rejects a tenant the user does not belong to", async () => {
+    const res = await switchRoute.POST(
+      request("/api/auth/switch-tenant", sameOrigin({ method: "POST", cookie: acmeViewer, body: JSON.stringify({ tenant: "globex" }) })),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects cross-origin switches", async () => {
+    const res = await switchRoute.POST(
+      request("/api/auth/switch-tenant", {
+        method: "POST",
+        headers: { origin: "https://evil.example" },
+        cookie: acmeAdmin,
+        body: JSON.stringify({ tenant: "acme" }),
+      }),
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+let newbieCookie: string;
+
+describe("member administration", () => {
+  it("requires admin for list and mutations", async () => {
+    expect((await membersRoute.GET(request("/api/admin/members", { cookie: acmeViewer }))).status).toBe(403);
+    const res = await membersRoute.POST(
+      request("/api/admin/members", sameOrigin({ method: "POST", cookie: acmeViewer, body: JSON.stringify({ email: "x@y.test", role: "viewer" }) })),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("invites a new user who can log in with the temporary password", async () => {
+    const res = await membersRoute.POST(
+      request("/api/admin/members", sameOrigin({ method: "POST", cookie: acmeAdmin, body: JSON.stringify({ email: "newbie@acme.test", name: "Nia Newbie", role: "viewer" }) })),
+    );
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.member).toMatchObject({ email: "newbie@acme.test", role: "viewer" });
+    expect(typeof body.temporaryPassword).toBe("string");
+
+    const login = await loginRoute.POST(
+      request("/api/auth/login", sameOrigin({ method: "POST", body: JSON.stringify({ email: "newbie@acme.test", password: body.temporaryPassword }) })),
+    );
+    expect(login.status).toBe(200);
+    newbieCookie = cookieFrom(login);
+  });
+
+  it("returns 409 for an existing member and 422 for bad input", async () => {
+    const dupe = await membersRoute.POST(
+      request("/api/admin/members", sameOrigin({ method: "POST", cookie: acmeAdmin, body: JSON.stringify({ email: "newbie@acme.test", role: "viewer" }) })),
+    );
+    expect(dupe.status).toBe(409);
+    const bad = await membersRoute.POST(
+      request("/api/admin/members", sameOrigin({ method: "POST", cookie: acmeAdmin, body: JSON.stringify({ email: "other@acme.test", role: "owner" }) })),
+    );
+    expect(bad.status).toBe(422);
+  });
+
+  it("promotes a member and the new role applies immediately", async () => {
+    const list = await membersRoute.GET(request("/api/admin/members", { cookie: acmeAdmin }));
+    const members = (await list.json()).members as { userId: string; email: string }[];
+    const newbie = members.find((m) => m.email === "newbie@acme.test")!;
+
+    const before = await meRoute.GET(request("/api/me", { cookie: acmeViewer }));
+    expect((await before.json()).role).toBe("viewer");
+    const viewer = members.find((m) => m.email === "viewer@acme.test")!;
+
+    const patch = await memberRoute.PATCH(
+      request(`/api/admin/members/${viewer.userId}`, sameOrigin({ method: "PATCH", cookie: acmeAdmin, body: JSON.stringify({ role: "admin" }) })),
+      params(viewer.userId),
+    );
+    expect(patch.status).toBe(200);
+    // Role is re-read from memberships on every request — the live session upgrades now.
+    const after = await meRoute.GET(request("/api/me", { cookie: acmeViewer }));
+    expect((await after.json()).role).toBe("admin");
+    expect(newbie.userId).toBeTruthy();
+  });
+
+  it("blocks self-changes and removes a member, killing their session", async () => {
+    const list = await membersRoute.GET(request("/api/admin/members", { cookie: acmeAdmin }));
+    const members = (await list.json()).members as { userId: string; email: string }[];
+    const self = members.find((m) => m.email === "admin@acme.test")!;
+    const newbie = members.find((m) => m.email === "newbie@acme.test")!;
+
+    const selfPatch = await memberRoute.PATCH(
+      request(`/api/admin/members/${self.userId}`, sameOrigin({ method: "PATCH", cookie: acmeAdmin, body: JSON.stringify({ role: "viewer" }) })),
+      params(self.userId),
+    );
+    expect(selfPatch.status).toBe(422);
+    const selfDelete = await memberRoute.DELETE(
+      request(`/api/admin/members/${self.userId}`, sameOrigin({ method: "DELETE", cookie: acmeAdmin })),
+      params(self.userId),
+    );
+    expect(selfDelete.status).toBe(422);
+
+    const del = await memberRoute.DELETE(
+      request(`/api/admin/members/${newbie.userId}`, sameOrigin({ method: "DELETE", cookie: acmeAdmin })),
+      params(newbie.userId),
+    );
+    expect(del.status).toBe(204);
+    const delAgain = await memberRoute.DELETE(
+      request(`/api/admin/members/${newbie.userId}`, sameOrigin({ method: "DELETE", cookie: acmeAdmin })),
+      params(newbie.userId),
+    );
+    expect(delAgain.status).toBe(404);
+    // Removing the membership killed the member's sessions in this tenant.
+    const me = await meRoute.GET(request("/api/me", { cookie: newbieCookie }));
+    expect(me.status).toBe(401);
   });
 });

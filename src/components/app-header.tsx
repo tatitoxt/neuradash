@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { LogoutButton } from "@/components/logout-button";
+import { TenantSwitcher } from "@/components/tenant-switcher";
 import type { Session } from "@/lib/auth/session";
 
 export function AppHeader({ session }: { session: Session }) {
@@ -20,6 +21,7 @@ export function AppHeader({ session }: { session: Session }) {
           ) : null}
         </nav>
         <div className="ml-auto flex items-center gap-3 text-sm">
+          <TenantSwitcher currentSlug={session.tenantSlug} />
           <span data-testid="tenant-name" className="text-slate-300">
             {session.tenantName}
           </span>

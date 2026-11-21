@@ -29,6 +29,13 @@
       "when": 1795288784306,
       "tag": "0003_ingest_rate_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795347600000,
+      "tag": "0004_members_admin",
+      "breakpoints": true
     }
   ]
 }

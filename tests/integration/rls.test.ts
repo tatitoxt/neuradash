@@ -70,7 +70,15 @@ describe("Postgres row-level security (app role, no application code involved)",
   it("cannot modify identities or tenants, nor disable RLS", async () => {
     await expect(db.query("update users set password_hash = 'x'")).rejects.toThrow(/permission denied/);
     await expect(db.query("insert into tenants (slug, name) values ('evil', 'Evil')")).rejects.toThrow(/permission denied/);
-    await expect(db.query("insert into memberships (tenant_id, user_id, role) select tenant_id, user_id, 'admin' from memberships")).rejects.toThrow(/permission denied/);
+    // Member admin is granted now, but writes still cannot escape the tenant context:
+    // with no app.tenant_id set, the RLS WITH CHECK rejects the row.
+    const { rows: anyUser } = await db.query("select id from users limit 1");
+    await expect(
+      db.query("insert into memberships (tenant_id, user_id, role) values ($1, $2, 'admin')", [
+        seeded.acme!.tenantId,
+        anyUser[0].id,
+      ]),
+    ).rejects.toThrow(/row-level security/);
     await expect(db.query("alter table events disable row level security")).rejects.toThrow(/must be owner/);
   });
 
