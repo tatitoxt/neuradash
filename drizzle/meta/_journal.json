@@ -43,6 +43,13 @@
       "when": 1795400400000,
       "tag": "0005_metric_rollups",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795527600000,
+      "tag": "0006_shared_login_rate_limit",
+      "breakpoints": true
     }
   ]
 }
