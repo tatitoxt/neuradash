@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   bigserial,
   check,
   doublePrecision,
@@ -118,6 +119,21 @@ export const events = pgTable(
     check("events_type_len", sql`char_length(${t.type}) between 1 and 64`),
     check("events_source_len", sql`char_length(${t.source}) between 1 and 128`),
   ],
+);
+
+export const metricRollups = pgTable(
+  "metric_rollups",
+  {
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    bucketStart: timestamp("bucket_start", { withTimezone: true }).notNull(),
+    events: bigint("events", { mode: "number" }).notNull().default(0),
+    errors: bigint("errors", { mode: "number" }).notNull().default(0),
+    revenue: doublePrecision("revenue").notNull().default(0),
+    sources: text("sources").array().notNull().default(sql`'{}'::text[]`),
+  },
+  (t) => [primaryKey({ columns: [t.tenantId, t.bucketStart] })],
 );
 
 export type Role = (typeof roleEnum.enumValues)[number];

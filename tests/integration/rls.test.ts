@@ -92,3 +92,24 @@ describe("Postgres row-level security (app role, no application code involved)",
     expect(none.rowCount).toBe(0);
   });
 });
+
+describe("metric_rollups (pre-aggregated per-minute metrics)", () => {
+  it("is populated by the seed at 1-minute granularity", async () => {
+    await asTenant(seeded.acme!.tenantId, async () => {
+      const { rows } = await db.query(
+        "select count(*)::int as buckets, sum(events)::int as total from metric_rollups",
+      );
+      expect(rows[0].buckets).toBeGreaterThan(0);
+      expect(rows[0].total).toBe(40); // reseed(40) events in acme
+    });
+  });
+
+  it("sees nothing without tenant context and only own rows with it", async () => {
+    const { rows } = await db.query("select count(*)::int as n from metric_rollups");
+    expect(rows[0].n).toBe(0);
+    await asTenant(seeded.acme!.tenantId, async () => {
+      const tenants = await db.query("select distinct tenant_id from metric_rollups");
+      expect(tenants.rows).toEqual([{ tenant_id: seeded.acme!.tenantId }]);
+    });
+  });
+});

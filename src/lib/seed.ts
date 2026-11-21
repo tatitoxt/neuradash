@@ -80,7 +80,7 @@ export async function seedDemo(owner: pg.Pool | pg.Client, opts: SeedOptions = {
   const eventsPerTenant = opts.eventsPerTenant ?? 6000;
   const passwordHash = await hashPassword(DEMO_PASSWORD, opts.scrypt ?? DEFAULT_SCRYPT);
 
-  await db.execute(sql`truncate events, api_keys, sessions, memberships, users, tenants restart identity cascade`);
+  await db.execute(sql`truncate events, metric_rollups, api_keys, sessions, memberships, users, tenants restart identity cascade`);
 
   const result: Record<string, { tenantId: string; apiKey: string }> = {};
   for (const [index, t] of DEMO_TENANTS.entries()) {
@@ -109,6 +109,18 @@ export async function seedDemo(owner: pg.Pool | pg.Client, opts: SeedOptions = {
     for (let i = 0; i < rows.length; i += 1000) {
       await db.insert(schema.events).values(rows.slice(i, i + 1000));
     }
+    // Same per-minute rollup the ingest path maintains, rebuilt for the seed events.
+    await db.execute(sql`
+      insert into metric_rollups (tenant_id, bucket_start, events, errors, revenue, sources)
+      select tenant_id,
+             date_bin('1 minute', occurred_at, timestamptz 'epoch'),
+             count(*),
+             count(*) filter (where type = 'error'),
+             coalesce(sum(value) filter (where type = 'purchase'), 0),
+             array_agg(distinct source)
+      from events
+      where tenant_id = ${tenant!.id}
+      group by tenant_id, 2`);
     result[t.slug] = { tenantId: tenant!.id, apiKey: t.apiKey };
   }
 
