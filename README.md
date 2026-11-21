@@ -20,7 +20,7 @@ NeuraDash is a small, complete implementation of that story: ingest → persist 
 
 ## What it does today
 
-- **Email + password login** with scrypt-hashed passwords and opaque session tokens (only their SHA-256 is stored), sent as `HttpOnly; SameSite=Lax` cookies. Same-origin checks on every cookie-authenticated mutation; per-email login rate limiting.
+- **Email + password login** with scrypt-hashed passwords and opaque session tokens (only their SHA-256 is stored), sent as `HttpOnly; SameSite=Lax` cookies. Same-origin checks on every cookie-authenticated mutation; per-email login rate limiting shared across instances (counters in Postgres, enforced by an atomic upsert inside `consume_login_attempt`).
 - **Roles per tenant**: `admin` and `viewer`, re-read from the database on every request. Viewers get HTTP 403 on admin APIs and a 403 page on `/admin`.
 - **Ingest API**: `POST /api/ingest` with a per-tenant API key (`Authorization: Bearer …`), single event or batch of up to 100, validated with Zod. The tenant comes from the key only; a `tenantId` field in the body is rejected. Keys carry scopes (currently `ingest`) and an optional expiry, enforced inside `resolve_api_key` in the database — revoked and expired keys resolve to nothing, and a key without the `ingest` scope gets 403. An optional per-key `rateLimitPerMinute` is enforced by `consume_ingest_token`, an atomic upsert on `(key_id, minute)` — over-limit ingest gets 429 while other keys are unaffected.
 - **Pre-aggregated metrics** (22–30× faster queries than raw aggregation — measured in [docs/benchmarks.md](docs/benchmarks.md)): ingest maintains `metric_rollups` (per-tenant, per-minute counts, errors, revenue, sources) inside the same transaction, so the dashboard's `/api/metrics` reads O(minutes) rows instead of scanning raw events.
@@ -157,7 +157,6 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 - **Single instance tested.** Fan-out via `LISTEN/NOTIFY` should work with several app instances (each one listens), but only one instance has been run and tested. No load or performance testing has been done.
 - **Aggregates come from `metric_rollups`** (per-tenant, per-minute buckets maintained inside the ingest transaction), so `/api/metrics` costs O(minutes) not O(events). There is still no partitioning or retention policy on `events` itself.
 - **Live chart updates are approximate between resyncs**: live events update KPIs and the current bucket client-side; the dashboard re-fetches exact aggregates every 60 s and after a reconnect.
-- **Login rate limiting is in-memory** per process (resets on restart, not shared across instances).
 - **No signup, password reset, MFA or self-service profile.** Invites are the only way in: no mailer exists, so the temporary password is shown once to the inviting admin and must be handed over manually.
 - **`users` and `sessions` are global tables without RLS** (they are needed before a tenant is known); the app role can read `users` and insert new rows for invites, but cannot update or delete them. Membership writes stay tenant-scoped by RLS.
 - **API keys have a single scope today** (`ingest`), so scoping is forward-compatible structure, not fine-grained authorization yet.
@@ -169,7 +168,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 
 - Time-based partitioning for `events` and a retention job (rollups already cover the metrics reads).
 - Additional API key scopes once endpoints beyond ingest exist.
-- Shared rate limiting (Postgres or Redis) and a multi-instance test for the realtime fan-out.
+- Multi-instance test for the realtime fan-out (Postgres or Redis pub/sub).
 
 ## License
 

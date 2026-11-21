@@ -14,7 +14,7 @@ import * as switchRoute from "@/app/api/auth/switch-tenant/route";
 import { DEMO_PASSWORD } from "@/lib/seed";
 import { createApiKey } from "@/lib/data/api-keys";
 import { closeDb } from "@/lib/db/client";
-import { cookieFrom, request, reseed, sameOrigin } from "./helpers";
+import { appClient, cookieFrom, request, reseed, sameOrigin } from "./helpers";
 
 let seeded: Awaited<ReturnType<typeof reseed>>;
 const params = (id: string | number) => ({ params: Promise.resolve({ id: String(id) }) });
@@ -74,6 +74,31 @@ describe("login and sessions", () => {
       request("/api/auth/login", sameOrigin({ method: "POST", body: JSON.stringify({ email: "admin@globex.test", password: DEMO_PASSWORD }) })),
     );
     expect(res.headers.get("set-cookie")).toMatch(/HttpOnly; SameSite=Lax/);
+  });
+
+  it("rate-limits repeated login failures across the shared Postgres bucket", async () => {
+    // A non-existent mailbox keeps the bucket isolated from real users.
+    const email = `ghost-${Date.now()}@acme.test`;
+    const tryLogin = () =>
+      loginRoute.POST(
+        request("/api/auth/login", sameOrigin({ method: "POST", body: JSON.stringify({ email, password: "nope" }) })),
+      );
+    for (let i = 0; i < 10; i += 1) {
+      const res = await tryLogin();
+      expect(res.status).toBe(401);
+    }
+    const blocked = await tryLogin();
+    expect(blocked.status).toBe(429);
+
+    // reset_login_attempts clears the bucket for the next window.
+    const client = appClient();
+    await client.connect();
+    try {
+      await client.query("select reset_login_attempts($1)", [email]);
+    } finally {
+      await client.end();
+    }
+    expect((await tryLogin()).status).toBe(401);
   });
 
   it("requires a session for data endpoints", async () => {
