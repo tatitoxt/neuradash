@@ -24,11 +24,11 @@ async function token(email: string): Promise<string> {
   return r.token;
 }
 
-function connect(cookie: string | null, wsOrigin = origin): Promise<Conn> {
+function connect(cookie: string | null, target = origin, wsOrigin = target): Promise<Conn> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = { origin: wsOrigin };
     if (cookie) headers.cookie = `nd_session=${cookie}`;
-    const ws = new WebSocket(`${origin.replace("http", "ws")}/ws`, { headers });
+    const ws = new WebSocket(`${target.replace("http", "ws")}/ws`, { headers });
     sockets.push(ws);
     const messages: ServerMessage[] = [];
     const waiters: { pred: (m: ServerMessage) => boolean; resolve: (m: ServerMessage) => void }[] = [];
@@ -78,7 +78,7 @@ describe("WebSocket authentication", () => {
   });
 
   it("rejects cross-origin connections even with a valid session", async () => {
-    await expect(connect(await token("admin@acme.test"), "https://evil.example")).rejects.toThrow("HTTP 403");
+    await expect(connect(await token("admin@acme.test"), origin, "https://evil.example")).rejects.toThrow("HTTP 403");
   });
 
   it("announces the session's tenant on connect", async () => {
@@ -128,6 +128,36 @@ describe("reconnect backfill", () => {
     const c = await connect(await token("viewer@acme.test"));
     c.ws.send("not json");
     expect(await c.next((m) => m.type === "error")).toEqual({ type: "error", code: "bad_message" });
+  });
+});
+
+describe("multi-instance fan-out", () => {
+  it("delivers an event to a socket on a different instance via Postgres NOTIFY", async () => {
+    // Two independent realtime instances (separate LISTEN connection and client
+    // registry) stand in for two app processes on one database.
+    const rt2 = createRealtime({ listenConnectionString: process.env.DATABASE_URL!, heartbeatMs: 200, log: () => {} });
+    const server2 = createServer((_req, res) => res.writeHead(404).end());
+    server2.on("upgrade", (req, socket, head) => {
+      if (!rt2.handleUpgrade(req, socket, head)) socket.destroy();
+    });
+    await new Promise<void>((r) => server2.listen(0, "127.0.0.1", r));
+    const origin2 = `http://127.0.0.1:${(server2.address() as AddressInfo).port}`;
+    try {
+      await rt2.ready;
+      const remote = await connect(await token("viewer@acme.test"), origin2);
+      await remote.next((m) => m.type === "ready");
+      // The event is written under this test's node — instance B hears it only
+      // because ingest's pg_notify crosses the database.
+      await insertEvents(seeded.acme!.tenantId, [
+        { type: "signup", source: "acme-cross-instance", value: null, properties: {}, occurredAt: new Date() },
+      ]);
+      const delivered = await remote.next(isEvent("acme-cross-instance"));
+      expect(delivered.type).toBe("event");
+      expect(rt2.connectionCount(seeded.acme!.tenantId)).toBe(1);
+    } finally {
+      await rt2.close();
+      await new Promise((r) => server2.close(r));
+    }
   });
 });
 

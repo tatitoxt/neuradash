@@ -138,7 +138,7 @@ tests/unit, tests/integration, e2e/
 | Suite | Command | What it covers | Count |
 | --- | --- | --- | --- |
 | Unit (Vitest) | `npm test` | password hashing, tokens, ingest validation, range buckets, live reducer, cookies, origin check, rate limiter, reconnect backoff, seed PRNG | 30 |
-| Integration (Vitest + real Postgres) | `npm run test:integration` | RLS as the app role with raw SQL; route handlers for login/logout, ingest, events, metrics and admin keys; cross-tenant reads, key revocation, expiry/scopes and per-key rate limits; tenant switching and member admin (invite, role change, removal, self-guards); WebSocket auth, tenant-scoped broadcast, backfill and logout disconnect; per-minute `metric_rollups` population, RLS on rollups and rollup-driven metrics | 43 |
+| Integration (Vitest + real Postgres) | `npm run test:integration` | RLS as the app role with raw SQL; route handlers for login/logout, ingest, events, metrics and admin keys; cross-tenant reads, key revocation, expiry/scopes and per-key rate limits; tenant switching and member admin (invite, role change, removal, self-guards); WebSocket auth, tenant-scoped broadcast, backfill, logout disconnect and cross-instance delivery over `pg_notify` (two independent realtime instances on one database); per-minute `metric_rollups` population, RLS on rollups and rollup-driven metrics | 46 |
 | E2E (Playwright, Chromium) | `npm run build && npm run test:e2e` | real production server in a browser: login, live update after ingest, backfill after a dropped socket, cross-tenant HTTP and WebSocket denial, viewer denied admin, admin key lifecycle | 12 |
 
 Counts are from running the commands above in this repository; re-run them to reproduce.
@@ -173,7 +173,6 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 
 - Time-based partitioning for `events` (retention pruning and rollups already bound growth).
 - Additional API key scopes once endpoints beyond ingest exist.
-- Multi-instance test for the realtime fan-out (Postgres or Redis pub/sub).
 
 ## License
 
