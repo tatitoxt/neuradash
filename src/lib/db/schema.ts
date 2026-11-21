@@ -4,6 +4,7 @@ import {
   check,
   doublePrecision,
   index,
+  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -74,11 +75,27 @@ export const apiKeys = pgTable(
     keyHash: text("key_hash").notNull().unique(),
     scopes: text("scopes").array().notNull().default(sql`'{ingest}'`),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** Max ingest requests per rolling minute; null = unlimited. */
+    rateLimitPerMinute: integer("rate_limit_per_minute"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
   },
   (t) => [index("api_keys_tenant_idx").on(t.tenantId)],
+);
+
+// Per-minute ingest counters for api_keys.rate_limit_per_minute; read/written
+// atomically by the consume_ingest_token() SQL function, never by the app.
+export const apiKeyRateWindows = pgTable(
+  "api_key_rate_windows",
+  {
+    keyId: uuid("key_id")
+      .notNull()
+      .references(() => apiKeys.id, { onDelete: "cascade" }),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    count: integer("count").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.keyId, t.windowStart] })],
 );
 
 export const events = pgTable(

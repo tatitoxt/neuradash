@@ -115,6 +115,21 @@ describe("ingest", () => {
     expect((await ingest(noScope.key, { type: "x" })).status).toBe(403);
     expect(await (await ingest(noScope.key, { type: "x" })).json()).toMatchObject({ error: "insufficient_scope" });
   });
+
+  it("enforces the key's per-minute ingest limit only on that key", async () => {
+    const tenantId = seeded.acme!.tenantId;
+    const limited = await createApiKey(tenantId, "limited", { rateLimitPerMinute: 2 });
+    expect(limited.apiKey.rateLimitPerMinute).toBe(2);
+    expect((await ingest(limited.key, { type: "x" })).status).toBe(202);
+    expect((await ingest(limited.key, { type: "x" })).status).toBe(202);
+    const third = await ingest(limited.key, { type: "x" });
+    expect(third.status).toBe(429);
+    expect(await third.json()).toMatchObject({ error: "rate_limited" });
+
+    // An unlimited key of the same tenant is unaffected.
+    const open = await createApiKey(tenantId, "unlimited");
+    expect((await ingest(open.key, { type: "x" })).status).toBe(202);
+  });
 });
 
 describe("event listing", () => {

@@ -6,6 +6,7 @@ const bodySchema = z.object({
   name: z.string().trim().min(1).max(64),
   scopes: z.array(z.enum(API_KEY_SCOPES)).optional(),
   expiresAt: z.iso.datetime().optional(),
+  rateLimitPerMinute: z.number().int().min(1).max(1_000_000).nullable().optional(),
 });
 
 export async function GET(req: Request): Promise<Response> {
@@ -30,6 +31,7 @@ export async function POST(req: Request): Promise<Response> {
   const created = await createApiKey(auth.session.tenantId, parsed.data.name, {
     scopes: parsed.data.scopes,
     expiresAt,
+    rateLimitPerMinute: parsed.data.rateLimitPerMinute ?? null,
   });
   return json(created, 201);
 }

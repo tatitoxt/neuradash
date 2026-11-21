@@ -12,6 +12,7 @@ export type ApiKeyDTO = {
   prefix: string;
   scopes: string[];
   expiresAt: string | null;
+  rateLimitPerMinute: number | null;
   createdAt: string;
   lastUsedAt: string | null;
   revokedAt: string | null;
@@ -23,6 +24,7 @@ const columns = {
   prefix: apiKeys.prefix,
   scopes: apiKeys.scopes,
   expiresAt: apiKeys.expiresAt,
+  rateLimitPerMinute: apiKeys.rateLimitPerMinute,
   createdAt: apiKeys.createdAt,
   lastUsedAt: apiKeys.lastUsedAt,
   revokedAt: apiKeys.revokedAt,
@@ -34,6 +36,7 @@ function toDTO(r: {
   prefix: string;
   scopes: string[];
   expiresAt: Date | null;
+  rateLimitPerMinute: number | null;
   createdAt: Date;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
@@ -44,6 +47,7 @@ function toDTO(r: {
     prefix: r.prefix,
     scopes: r.scopes,
     expiresAt: r.expiresAt?.toISOString() ?? null,
+    rateLimitPerMinute: r.rateLimitPerMinute,
     createdAt: r.createdAt.toISOString(),
     lastUsedAt: r.lastUsedAt?.toISOString() ?? null,
     revokedAt: r.revokedAt?.toISOString() ?? null,
@@ -61,7 +65,7 @@ export async function listApiKeys(tenantId: string): Promise<ApiKeyDTO[]> {
 export async function createApiKey(
   tenantId: string,
   name: string,
-  opts: { scopes?: ApiKeyScope[]; expiresAt?: Date | null; plaintext?: string } = {},
+  opts: { scopes?: ApiKeyScope[]; expiresAt?: Date | null; rateLimitPerMinute?: number | null; plaintext?: string } = {},
 ): Promise<{ key: string; apiKey: ApiKeyDTO }> {
   const plaintext = opts.plaintext ?? generateApiKey();
   const [row] = await withTenant(tenantId, (tx) =>
@@ -74,6 +78,7 @@ export async function createApiKey(
         keyHash: sha256Hex(plaintext),
         scopes: opts.scopes ?? [...API_KEY_SCOPES],
         expiresAt: opts.expiresAt ?? null,
+        rateLimitPerMinute: opts.rateLimitPerMinute ?? null,
       })
       .returning(columns),
   );
@@ -109,4 +114,16 @@ export async function resolveApiKey(
     tx.update(apiKeys).set({ lastUsedAt: sql`now()` }).where(eq(apiKeys.id, row.key_id)),
   );
   return { keyId: row.key_id, tenantId: row.tenant_id, scopes: row.scopes ?? [] };
+}
+
+/**
+ * Per-key per-minute ingest limit, enforced inside Postgres by
+ * consume_ingest_token(): an atomic upsert on (key_id, minute) so concurrent
+ * ingest counts correctly. Keys without a limit always pass.
+ */
+export async function consumeIngestToken(keyId: string): Promise<boolean> {
+  const result = await getDb().execute<{ allowed: boolean }>(
+    sql`select consume_ingest_token(${keyId}::uuid) as allowed`,
+  );
+  return result.rows[0]?.allowed ?? true;
 }
