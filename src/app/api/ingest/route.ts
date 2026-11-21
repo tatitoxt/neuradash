@@ -1,4 +1,4 @@
-import { resolveApiKey } from "@/lib/data/api-keys";
+import { consumeIngestToken, resolveApiKey } from "@/lib/data/api-keys";
 import { insertEvents } from "@/lib/data/events";
 import { apiError, json, readJson } from "@/lib/http";
 import { parseIngestBody } from "@/lib/ingest/schema";
@@ -19,6 +19,9 @@ export async function POST(req: Request): Promise<Response> {
   if (!resolved) return apiError(401, "invalid_api_key");
   if (!resolved.scopes.includes("ingest")) {
     return apiError(403, "insufficient_scope", "this API key cannot ingest events");
+  }
+  if (!(await consumeIngestToken(resolved.keyId))) {
+    return apiError(429, "rate_limited", "this API key is over its per-minute ingest limit");
   }
 
   const raw = await readJson(req, MAX_BODY_BYTES);

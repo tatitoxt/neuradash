@@ -17,11 +17,13 @@ export function ApiKeysPanel({ initialKeys }: { initialKeys: ApiKeyDTO[] }) {
     const name = String(data.get("name") ?? "");
     const ttlDays = Number(data.get("ttl") ?? "0");
     const expiresAt = ttlDays > 0 ? new Date(Date.now() + ttlDays * 86_400_000).toISOString() : undefined;
+    const limitRaw = String(data.get("rateLimit") ?? "").trim();
+    const rateLimitPerMinute = limitRaw === "" ? null : Number(limitRaw);
     setError(null);
     const res = await fetch("/api/admin/api-keys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, expiresAt }),
+      body: JSON.stringify({ name, expiresAt, rateLimitPerMinute }),
     });
     if (!res.ok) return setError("Could not create key");
     const body = (await res.json()) as { key: string; apiKey: ApiKeyDTO };
@@ -59,6 +61,15 @@ export function ApiKeysPanel({ initialKeys }: { initialKeys: ApiKeyDTO[] }) {
           <option value="90">90 days</option>
           <option value="365">1 year</option>
         </select>
+        <input
+          name="rateLimit"
+          type="number"
+          min={1}
+          max={1000000}
+          placeholder="Limit/min"
+          aria-label="Ingest limit per minute"
+          className="w-28 rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm"
+        />
         <button type="submit" className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-500">
           Create key
         </button>
@@ -75,6 +86,7 @@ export function ApiKeysPanel({ initialKeys }: { initialKeys: ApiKeyDTO[] }) {
             <th className="py-2">Name</th>
             <th>Prefix</th>
             <th>Scopes</th>
+            <th>Limit/min</th>
             <th>Expires</th>
             <th>Last used</th>
             <th />
@@ -86,6 +98,7 @@ export function ApiKeysPanel({ initialKeys }: { initialKeys: ApiKeyDTO[] }) {
               <td className="py-2">{k.name}</td>
               <td className="font-mono text-slate-400">{k.prefix}…</td>
               <td className="text-slate-400">{k.scopes.join(", ")}</td>
+              <td className="text-slate-400">{k.rateLimitPerMinute ?? "—"}</td>
               <td className={k.expiresAt && new Date(k.expiresAt) < new Date() ? "text-red-400" : "text-slate-400"}>
                 {k.expiresAt ? date.format(new Date(k.expiresAt)) : "never"}
               </td>
