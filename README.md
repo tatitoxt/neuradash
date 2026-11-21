@@ -24,6 +24,11 @@ NeuraDash is a small, complete implementation of that story: ingest → persist 
 - **Roles per tenant**: `admin` and `viewer`, re-read from the database on every request. Viewers get HTTP 403 on admin APIs and a 403 page on `/admin`.
 - **Ingest API**: `POST /api/ingest` with a per-tenant API key (`Authorization: Bearer …`), single event or batch of up to 100, validated with Zod. The tenant comes from the key only; a `tenantId` field in the body is rejected. Keys carry scopes (currently `ingest`) and an optional expiry, enforced inside `resolve_api_key` in the database — revoked and expired keys resolve to nothing, and a key without the `ingest` scope gets 403. An optional per-key `rateLimitPerMinute` is enforced by `consume_ingest_token`, an atomic upsert on `(key_id, minute)` — over-limit ingest gets 429 while other keys are unaffected.
 - **Pre-aggregated metrics** (22–30× faster queries than raw aggregation — measured in [docs/benchmarks.md](docs/benchmarks.md)): ingest maintains `metric_rollups` (per-tenant, per-minute counts, errors, revenue, sources) inside the same transaction, so the dashboard's `/api/metrics` reads O(minutes) rows instead of scanning raw events.
+- **Time-partitioned events**: `events` is a RANGE-partitioned table on
+  `received_at` (49 monthly partitions + a DEFAULT catch-all). Retention
+  pruning and dashboard scans hit only the months they need, and
+  `create_event_partitions(n)` (SECURITY DEFINER, owner-only) keeps a
+  rolling window ahead of time.
 - **Per-tenant event retention**: admins set a 1–3650-day window
   (`PUT /api/admin/retention`, SECURITY DEFINER — the app role stays
   read-only on `tenants`) and prune on demand or from cron
@@ -138,7 +143,7 @@ tests/unit, tests/integration, e2e/
 | Suite | Command | What it covers | Count |
 | --- | --- | --- | --- |
 | Unit (Vitest) | `npm test` | password hashing, tokens, ingest validation, range buckets, live reducer, cookies, origin check, rate limiter, reconnect backoff, seed PRNG | 30 |
-| Integration (Vitest + real Postgres) | `npm run test:integration` | RLS as the app role with raw SQL; route handlers for login/logout, ingest, events, metrics and admin keys; cross-tenant reads, key revocation, expiry/scopes and per-key rate limits; tenant switching and member admin (invite, role change, removal, self-guards); WebSocket auth, tenant-scoped broadcast, backfill, logout disconnect and cross-instance delivery over `pg_notify` (two independent realtime instances on one database); per-minute `metric_rollups` population, RLS on rollups and rollup-driven metrics | 46 |
+| Integration (Vitest + real Postgres) | `npm run test:integration` | RLS as the app role with raw SQL; route handlers for login/logout, ingest, events, metrics and admin keys; cross-tenant reads, key revocation, expiry/scopes and per-key rate limits; tenant switching and member admin (invite, role change, removal, self-guards); WebSocket auth, tenant-scoped broadcast, backfill, logout disconnect and cross-instance delivery over `pg_notify` (two independent realtime instances on one database); per-minute `metric_rollups` population, RLS on rollups and rollup-driven metrics; monthly-partition routing (current month, DEFAULT catch-all, `create_event_partitions` idempotency) | 49 |
 | E2E (Playwright, Chromium) | `npm run build && npm run test:e2e` | real production server in a browser: login, live update after ingest, backfill after a dropped socket, cross-tenant HTTP and WebSocket denial, viewer denied admin, admin key lifecycle | 12 |
 
 Counts are from running the commands above in this repository; re-run them to reproduce.
@@ -160,7 +165,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 ## Limitations
 
 - **Single instance tested.** Fan-out via `LISTEN/NOTIFY` should work with several app instances (each one listens), but only one instance has been run and tested. No load or performance testing has been done.
-- **Aggregates come from `metric_rollups`** (per-tenant, per-minute buckets maintained inside the ingest transaction), so `/api/metrics` costs O(minutes) not O(events). `events` has a per-tenant retention prune but no time-based partitioning yet.
+- **Aggregates come from `metric_rollups`** (per-tenant, per-minute buckets maintained inside the ingest transaction), so `/api/metrics` costs O(minutes) not O(events). `events` is monthly-partitioned on `received_at` with a DEFAULT catch-all.
 - **Live chart updates are approximate between resyncs**: live events update KPIs and the current bucket client-side; the dashboard re-fetches exact aggregates every 60 s and after a reconnect.
 - **No signup, password reset, MFA or self-service profile.** Invites are the only way in: no mailer exists, so the temporary password is shown once to the inviting admin and must be handed over manually.
 - **`users` and `sessions` are global tables without RLS** (they are needed before a tenant is known); the app role can read `users` and insert new rows for invites, but cannot update or delete them. Membership writes stay tenant-scoped by RLS.
@@ -168,11 +173,6 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 - **Docker image still ships `tsx` and the prod `node_modules`** (the custom server and db scripts run through it); devDependencies are excluded via the multi-stage build. It is meant for local demos, not production.
 - **`npm audit`** reports 4 moderate advisories in `drizzle-kit`'s transitive `@esbuild-kit/*` packages (dev-only migration generator, not used at runtime). There are no high or critical findings; CI fails on high/critical.
 - The demo API keys and passwords are intentionally public and for local use only.
-
-## Roadmap
-
-- Time-based partitioning for `events` (retention pruning and rollups already bound growth).
-- Additional API key scopes once endpoints beyond ingest exist.
 
 ## License
 
