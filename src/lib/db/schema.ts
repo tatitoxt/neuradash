@@ -22,6 +22,8 @@ export const tenants = pgTable("tenants", {
   slug: text("slug").notNull().unique(),
   name: text("name").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  /** Event retention window in days; null keeps events forever. */
+  retentionDays: integer("retention_days"),
 });
 
 export const users = pgTable("users", {

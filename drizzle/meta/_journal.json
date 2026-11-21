@@ -50,6 +50,13 @@
       "when": 1795527600000,
       "tag": "0006_shared_login_rate_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795536000000,
+      "tag": "0007_event_retention",
+      "breakpoints": true
     }
   ]
 }
