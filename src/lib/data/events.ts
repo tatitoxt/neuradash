@@ -32,6 +32,33 @@ export async function insertEvents(tenantId: string, input: IngestEvent[]): Prom
       .insert(events)
       .values(input.map((e) => ({ ...e, tenantId })))
       .returning();
+    // Maintain the per-minute rollup in the same transaction so metrics
+    // queries never read the raw events table.
+    const byMinute = new Map<number, { events: number; errors: number; revenue: number; sources: Set<string> }>();
+    for (const e of input) {
+      const bucket = Math.floor(e.occurredAt.getTime() / 60_000) * 60_000;
+      const r = byMinute.get(bucket) ?? { events: 0, errors: 0, revenue: 0, sources: new Set() };
+      r.events += 1;
+      if (e.type === "error") r.errors += 1;
+      if (e.type === "purchase" && e.value != null) r.revenue += e.value;
+      r.sources.add(e.source);
+      byMinute.set(bucket, r);
+    }
+    for (const [bucket, r] of byMinute) {
+      const sourceList = sql.join(
+        [...r.sources].map((src) => sql`${src}`),
+        sql`, `,
+      );
+      await tx.execute(sql`
+        insert into metric_rollups (tenant_id, bucket_start, events, errors, revenue, sources)
+        values (${tenantId}, ${new Date(bucket)}, ${r.events}, ${r.errors}, ${r.revenue},
+                array[${sourceList}]::text[])
+        on conflict (tenant_id, bucket_start) do update set
+          events = metric_rollups.events + excluded.events,
+          errors = metric_rollups.errors + excluded.errors,
+          revenue = metric_rollups.revenue + excluded.revenue,
+          sources = (select array_agg(distinct s) from unnest(metric_rollups.sources || excluded.sources) s)`);
+    }
     const payload = JSON.stringify({ tenantId, ids: rows.map((r) => r.id) });
     await tx.execute(sql`select pg_notify(${EVENTS_CHANNEL}, ${payload})`);
     return rows.map(toDTO);

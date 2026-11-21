@@ -36,6 +36,13 @@
       "when": 1795347600000,
       "tag": "0004_members_admin",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1795400400000,
+      "tag": "0005_metric_rollups",
+      "breakpoints": true
     }
   ]
 }

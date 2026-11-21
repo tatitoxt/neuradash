@@ -3,48 +3,56 @@ import { withTenant } from "@/lib/db/client";
 import type { MetricsDTO, SeriesPoint } from "@/lib/live/types";
 import { RANGES, bucketStarts, type RangeKey } from "@/lib/range";
 
-type SummaryRow = { events: string; errors: string; revenue: number | null; sources: string[] | null };
-type BucketRow = { bucket: Date | string; events: string; errors: string; revenue: number | null };
+type RollupRow = {
+  bucket_start: Date | string;
+  events: string | number;
+  errors: string | number;
+  revenue: number | string | null;
+  sources: string[] | null;
+};
 
 export async function getMetrics(tenantId: string, range: RangeKey, now = new Date()): Promise<MetricsDTO> {
   const { ms: rangeMs, bucketMs } = RANGES[range];
   const from = new Date(now.getTime() - rangeMs);
-  const bucket = `${bucketMs / 1000} seconds`;
 
-  const [lastEventId, summaryRows, bucketRows] = await withTenant(tenantId, async (tx) => {
-    // Pin the snapshot to an id so live events can be applied on top without double counting.
+  // Metrics read the pre-aggregated per-minute rollups maintained by ingest,
+  // so query cost is O(minutes in range), not O(events). The raw table is
+  // touched only to pin the live-event snapshot id.
+  const [lastEventId, rollupRows] = await withTenant(tenantId, async (tx) => {
     const max = await tx.execute<{ id: string | null }>(
       sql`select max(id) as id from events where tenant_id = ${tenantId}`,
     );
     const maxId = Number(max.rows[0]?.id ?? 0);
-    const summary = await tx.execute<SummaryRow>(sql`
-      select count(*) as events,
-             count(*) filter (where type = 'error') as errors,
-             coalesce(sum(value) filter (where type = 'purchase'), 0) as revenue,
-             array_agg(distinct source) as sources
-      from events
-      where tenant_id = ${tenantId} and occurred_at >= ${from} and occurred_at <= ${now} and id <= ${maxId}`);
-    const buckets = await tx.execute<BucketRow>(sql`
-      select date_bin(${bucket}::interval, occurred_at, timestamptz 'epoch') as bucket,
-             count(*) as events,
-             count(*) filter (where type = 'error') as errors,
-             coalesce(sum(value) filter (where type = 'purchase'), 0) as revenue
-      from events
-      where tenant_id = ${tenantId} and occurred_at >= ${from} and occurred_at <= ${now} and id <= ${maxId}
-      group by 1 order by 1`);
-    return [maxId, summary.rows, buckets.rows] as const;
+    const rows = await tx.execute<RollupRow>(sql`
+      select bucket_start, events, errors, revenue, sources
+      from metric_rollups
+      where tenant_id = ${tenantId} and bucket_start >= ${from} and bucket_start <= ${now}
+      order by bucket_start`);
+    return [maxId, rows.rows] as const;
   });
 
   const byBucket = new Map<number, SeriesPoint>();
-  for (const r of bucketRows) {
-    const t = new Date(r.bucket).getTime();
-    byBucket.set(t, { t, events: Number(r.events), errors: Number(r.errors), revenue: Number(r.revenue ?? 0) });
+  const sources = new Set<string>();
+  let totalEvents = 0;
+  let totalErrors = 0;
+  let totalRevenue = 0;
+  for (const r of rollupRows) {
+    const minute = new Date(r.bucket_start).getTime();
+    const t = Math.floor(minute / bucketMs) * bucketMs;
+    const agg = byBucket.get(t) ?? { t, events: 0, errors: 0, revenue: 0 };
+    agg.events += Number(r.events);
+    agg.errors += Number(r.errors);
+    agg.revenue += Number(r.revenue ?? 0);
+    byBucket.set(t, agg);
+    totalEvents += Number(r.events);
+    totalErrors += Number(r.errors);
+    totalRevenue += Number(r.revenue ?? 0);
+    for (const src of r.sources ?? []) sources.add(src);
   }
   const series = bucketStarts(now.getTime(), rangeMs, bucketMs).map(
     (t) => byBucket.get(t) ?? { t, events: 0, errors: 0, revenue: 0 },
   );
-  const s = summaryRows[0];
-  const sourceNames = (s?.sources ?? []).filter((x): x is string => typeof x === "string");
+  const sourceNames = [...sources].sort();
   return {
     range,
     rangeMs,
@@ -52,9 +60,9 @@ export async function getMetrics(tenantId: string, range: RangeKey, now = new Da
     generatedAt: now.toISOString(),
     lastEventId,
     summary: {
-      events: Number(s?.events ?? 0),
-      errors: Number(s?.errors ?? 0),
-      revenue: Number(s?.revenue ?? 0),
+      events: totalEvents,
+      errors: totalErrors,
+      revenue: totalRevenue,
       sources: sourceNames.length,
     },
     series,
