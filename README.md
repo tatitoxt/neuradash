@@ -157,8 +157,8 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 - **Login rate limiting is in-memory** per process (resets on restart, not shared across instances).
 - **No signup, password reset, MFA, user management or tenant switcher UI.** A session belongs to one tenant; the login API accepts an optional `tenant` slug for users with several memberships, but the demo users have one each.
 - **`users` and `sessions` are global tables without RLS** (they are needed before a tenant is known); the app role can read but not modify `users`.
-- **API keys have a single scope today** (`ingest`), so scoping is forward-compatible structure, not fine-grained authorization yet. There are no per-key rate limits.
-- **Docker image is single-stage** and keeps dev dependencies, because the custom server and scripts run through `tsx`. It is meant for local demos, not production.
+- **API keys have a single scope today** (`ingest`), so scoping is forward-compatible structure, not fine-grained authorization yet.
+- **Docker image still ships `tsx` and the prod `node_modules`** (the custom server and db scripts run through it); devDependencies are excluded via the multi-stage build. It is meant for local demos, not production.
 - **`npm audit`** reports 4 moderate advisories in `drizzle-kit`'s transitive `@esbuild-kit/*` packages (dev-only migration generator, not used at runtime). There are no high or critical findings; CI fails on high/critical.
 - The demo API keys and passwords are intentionally public and for local use only.
 
@@ -168,7 +168,6 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 - Rollup tables (per minute/hour) and time-based partitioning for `events`, with a retention job.
 - Additional API key scopes once endpoints beyond ingest exist.
 - Shared rate limiting (Postgres or Redis) and a multi-instance test for the realtime fan-out.
-- Multi-stage Docker image without dev dependencies.
 
 ## License
 
