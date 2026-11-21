@@ -24,6 +24,11 @@ NeuraDash is a small, complete implementation of that story: ingest → persist 
 - **Roles per tenant**: `admin` and `viewer`, re-read from the database on every request. Viewers get HTTP 403 on admin APIs and a 403 page on `/admin`.
 - **Ingest API**: `POST /api/ingest` with a per-tenant API key (`Authorization: Bearer …`), single event or batch of up to 100, validated with Zod. The tenant comes from the key only; a `tenantId` field in the body is rejected. Keys carry scopes (currently `ingest`) and an optional expiry, enforced inside `resolve_api_key` in the database — revoked and expired keys resolve to nothing, and a key without the `ingest` scope gets 403. An optional per-key `rateLimitPerMinute` is enforced by `consume_ingest_token`, an atomic upsert on `(key_id, minute)` — over-limit ingest gets 429 while other keys are unaffected.
 - **Pre-aggregated metrics** (22–30× faster queries than raw aggregation — measured in [docs/benchmarks.md](docs/benchmarks.md)): ingest maintains `metric_rollups` (per-tenant, per-minute counts, errors, revenue, sources) inside the same transaction, so the dashboard's `/api/metrics` reads O(minutes) rows instead of scanning raw events.
+- **Per-tenant event retention**: admins set a 1–3650-day window
+  (`PUT /api/admin/retention`, SECURITY DEFINER — the app role stays
+  read-only on `tenants`) and prune on demand or from cron
+  (`POST /api/admin/retention/prune`, `prune_tenant_events()`); pruned raw
+  events leave `metric_rollups` aggregates untouched, so dashboards survive.
 - **Persistence + broadcast**: events are inserted in Postgres and announced with `pg_notify` (IDs only). The WebSocket server re-reads them under the owning tenant's RLS context and sends them only to sockets of that tenant.
 - **Authenticated WebSocket** at `/ws`: requires a valid session cookie and same-origin `Origin`; the channel is the session's tenant (query parameters are ignored). Sockets are closed at the next heartbeat (30 s) after logout or session expiry.
 - **Reconnect + backfill**: the browser reconnects with jittered exponential backoff and sends `resume { lastEventId }`; the server replies with the missed events (capped at 500, after which the client resyncs aggregates).
@@ -155,7 +160,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 ## Limitations
 
 - **Single instance tested.** Fan-out via `LISTEN/NOTIFY` should work with several app instances (each one listens), but only one instance has been run and tested. No load or performance testing has been done.
-- **Aggregates come from `metric_rollups`** (per-tenant, per-minute buckets maintained inside the ingest transaction), so `/api/metrics` costs O(minutes) not O(events). There is still no partitioning or retention policy on `events` itself.
+- **Aggregates come from `metric_rollups`** (per-tenant, per-minute buckets maintained inside the ingest transaction), so `/api/metrics` costs O(minutes) not O(events). `events` has a per-tenant retention prune but no time-based partitioning yet.
 - **Live chart updates are approximate between resyncs**: live events update KPIs and the current bucket client-side; the dashboard re-fetches exact aggregates every 60 s and after a reconnect.
 - **No signup, password reset, MFA or self-service profile.** Invites are the only way in: no mailer exists, so the temporary password is shown once to the inviting admin and must be handed over manually.
 - **`users` and `sessions` are global tables without RLS** (they are needed before a tenant is known); the app role can read `users` and insert new rows for invites, but cannot update or delete them. Membership writes stay tenant-scoped by RLS.
@@ -166,7 +171,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 
 ## Roadmap
 
-- Time-based partitioning for `events` and a retention job (rollups already cover the metrics reads).
+- Time-based partitioning for `events` (retention pruning and rollups already bound growth).
 - Additional API key scopes once endpoints beyond ingest exist.
 - Multi-instance test for the realtime fan-out (Postgres or Redis pub/sub).
 

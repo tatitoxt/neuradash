@@ -11,6 +11,8 @@ import * as keyRoute from "@/app/api/admin/api-keys/[id]/route";
 import * as membersRoute from "@/app/api/admin/members/route";
 import * as memberRoute from "@/app/api/admin/members/[id]/route";
 import * as switchRoute from "@/app/api/auth/switch-tenant/route";
+import * as retentionRoute from "@/app/api/admin/retention/route";
+import * as pruneRoute from "@/app/api/admin/retention/prune/route";
 import { DEMO_PASSWORD } from "@/lib/seed";
 import { createApiKey } from "@/lib/data/api-keys";
 import { closeDb } from "@/lib/db/client";
@@ -19,9 +21,9 @@ import { appClient, cookieFrom, request, reseed, sameOrigin } from "./helpers";
 let seeded: Awaited<ReturnType<typeof reseed>>;
 const params = (id: string | number) => ({ params: Promise.resolve({ id: String(id) }) });
 
-async function loginAs(email: string): Promise<string> {
+async function loginAs(email: string, password = DEMO_PASSWORD): Promise<string> {
   const res = await loginRoute.POST(
-    request("/api/auth/login", sameOrigin({ method: "POST", body: JSON.stringify({ email, password: DEMO_PASSWORD }) })),
+    request("/api/auth/login", sameOrigin({ method: "POST", body: JSON.stringify({ email, password }) })),
   );
   expect(res.status).toBe(200);
   return cookieFrom(res);
@@ -379,5 +381,73 @@ describe("member administration", () => {
     // Removing the membership killed the member's sessions in this tenant.
     const me = await meRoute.GET(request("/api/me", { cookie: newbieCookie }));
     expect(me.status).toBe(401);
+  });
+});
+
+
+describe("event retention", () => {
+  it("prunes events past the tenant's retention window", async () => {
+    const admin = acmeAdmin;
+    // viewer@acme.test is promoted to admin by the member-administration
+    // suite, so the RBAC check uses a dedicated invitee instead.
+    const invite = await membersRoute.POST(
+      request("/api/admin/members",
+        sameOrigin({ method: "POST", cookie: admin, body: JSON.stringify({ email: "retention.viewer@acme.test", role: "viewer" }) })));
+    const { temporaryPassword } = (await invite.json()) as { temporaryPassword: string };
+    const viewer = await loginAs("retention.viewer@acme.test", temporaryPassword);
+    const tid = seeded.acme!.tenantId;
+
+    // RBAC + validation.
+    expect(
+      (await retentionRoute.PUT(request("/api/admin/retention",
+        sameOrigin({ method: "PUT", cookie: viewer, body: JSON.stringify({ retentionDays: 1 }) })))).status,
+    ).toBe(403);
+    expect(
+      (await retentionRoute.PUT(request("/api/admin/retention",
+        sameOrigin({ method: "PUT", cookie: admin, body: JSON.stringify({ retentionDays: 0 }) })))).status,
+    ).toBe(422);
+
+    // Set a 1-day window, plant an old and a fresh event, then prune.
+    expect(
+      (await retentionRoute.PUT(request("/api/admin/retention",
+        sameOrigin({ method: "PUT", cookie: admin, body: JSON.stringify({ retentionDays: 1 }) })))).status,
+    ).toBe(200);
+    const cur = await retentionRoute.GET(request("/api/admin/retention", { cookie: admin }));
+    expect((await cur.json()).retentionDays).toBe(1);
+
+    const client = appClient();
+    await client.connect();
+    try {
+      await client.query("select set_config('app.tenant_id', $1, false)", [tid]);
+      await client.query(
+        `insert into events (tenant_id, type, source, occurred_at, received_at)
+         values ($1, 'old_evt', 'test', now() - interval '3 days', now() - interval '3 days')`,
+        [tid],
+      );
+      await client.query(
+        `insert into events (tenant_id, type, source, occurred_at, received_at)
+         values ($1, 'fresh_evt', 'test', now(), now())`,
+        [tid],
+      );
+      const pruned = await pruneRoute.POST(request("/api/admin/retention/prune",
+        sameOrigin({ method: "POST", cookie: admin })));
+      expect(pruned.status).toBe(200);
+      expect((await pruned.json()).deleted).toBeGreaterThanOrEqual(1);
+
+      const old = await client.query("select count(*)::int n from events where type = 'old_evt'", []);
+      const fresh = await client.query("select count(*)::int n from events where type = 'fresh_evt'", []);
+      expect(old.rows[0].n).toBe(0);
+      expect(fresh.rows[0].n).toBe(1);
+      // Rollups keep the aggregates even after the raw events are pruned.
+      const rollups = await client.query(
+        "select count(*)::int n from metric_rollups where tenant_id = $1", [tid]);
+      expect(rollups.rows[0].n).toBeGreaterThan(0);
+    } finally {
+      await client.end();
+    }
+
+    // Null disables retention again.
+    await retentionRoute.PUT(request("/api/admin/retention",
+      sameOrigin({ method: "PUT", cookie: admin, body: JSON.stringify({ retentionDays: null }) })));
   });
 });
