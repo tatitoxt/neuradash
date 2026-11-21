@@ -9,6 +9,7 @@ import * as metricsRoute from "@/app/api/metrics/route";
 import * as keysRoute from "@/app/api/admin/api-keys/route";
 import * as keyRoute from "@/app/api/admin/api-keys/[id]/route";
 import { DEMO_PASSWORD } from "@/lib/seed";
+import { createApiKey } from "@/lib/data/api-keys";
 import { closeDb } from "@/lib/db/client";
 import { cookieFrom, request, reseed, sameOrigin } from "./helpers";
 
@@ -103,6 +104,16 @@ describe("ingest", () => {
     expect(accepted).toBe(2);
     const read = await eventRoute.GET(request(`/api/events/${ids[0]}`, { cookie: acmeAdmin }), params(ids[0]!));
     expect(await read.json()).toMatchObject({ event: { id: ids[0], type: "purchase", value: 9.5 } });
+  });
+
+  it("rejects expired keys and keys without the ingest scope", async () => {
+    const tenantId = seeded.acme!.tenantId;
+    const expired = await createApiKey(tenantId, "expired", { expiresAt: new Date(Date.now() - 60_000) });
+    expect((await ingest(expired.key, { type: "x" })).status).toBe(401);
+
+    const noScope = await createApiKey(tenantId, "no-ingest", { scopes: [] });
+    expect((await ingest(noScope.key, { type: "x" })).status).toBe(403);
+    expect(await (await ingest(noScope.key, { type: "x" })).json()).toMatchObject({ error: "insufficient_scope" });
   });
 });
 

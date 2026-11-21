@@ -17,6 +17,9 @@ export async function POST(req: Request): Promise<Response> {
   if (!key) return apiError(401, "missing_api_key", "send Authorization: Bearer <api key>");
   const resolved = await resolveApiKey(key);
   if (!resolved) return apiError(401, "invalid_api_key");
+  if (!resolved.scopes.includes("ingest")) {
+    return apiError(403, "insufficient_scope", "this API key cannot ingest events");
+  }
 
   const raw = await readJson(req, MAX_BODY_BYTES);
   if (!raw.ok) return raw.response;

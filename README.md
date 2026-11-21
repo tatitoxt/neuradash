@@ -22,12 +22,12 @@ NeuraDash is a small, complete implementation of that story: ingest → persist 
 
 - **Email + password login** with scrypt-hashed passwords and opaque session tokens (only their SHA-256 is stored), sent as `HttpOnly; SameSite=Lax` cookies. Same-origin checks on every cookie-authenticated mutation; per-email login rate limiting.
 - **Roles per tenant**: `admin` and `viewer`, re-read from the database on every request. Viewers get HTTP 403 on admin APIs and a 403 page on `/admin`.
-- **Ingest API**: `POST /api/ingest` with a per-tenant API key (`Authorization: Bearer …`), single event or batch of up to 100, validated with Zod. The tenant comes from the key only; a `tenantId` field in the body is rejected.
+- **Ingest API**: `POST /api/ingest` with a per-tenant API key (`Authorization: Bearer …`), single event or batch of up to 100, validated with Zod. The tenant comes from the key only; a `tenantId` field in the body is rejected. Keys carry scopes (currently `ingest`) and an optional expiry, enforced inside `resolve_api_key` in the database — revoked and expired keys resolve to nothing, and a key without the `ingest` scope gets 403.
 - **Persistence + broadcast**: events are inserted in Postgres and announced with `pg_notify` (IDs only). The WebSocket server re-reads them under the owning tenant's RLS context and sends them only to sockets of that tenant.
 - **Authenticated WebSocket** at `/ws`: requires a valid session cookie and same-origin `Origin`; the channel is the session's tenant (query parameters are ignored). Sockets are closed at the next heartbeat (30 s) after logout or session expiry.
 - **Reconnect + backfill**: the browser reconnects with jittered exponential backoff and sends `resume { lastEventId }`; the server replies with the missed events (capped at 500, after which the client resyncs aggregates).
 - **Dashboard**: KPI cards (events, error rate, revenue, active sources), event-volume and revenue charts (Recharts), live event feed and a 15m / 1h / 24h / 7d range filter.
-- **Admin page**: create (shown once) and revoke ingest API keys; list tenant members.
+- **Admin page**: create (shown once, with optional 30/90/365-day expiry) and revoke ingest API keys; list tenant members.
 - **Synthetic data**: deterministic seed (2 tenants, 3 users, 6,000 events per tenant over 7 days) and a generator that keeps posting events through the public ingest API.
 - **`docker compose up`** runs Postgres, migrations + seed, the app and the generator.
 
@@ -157,7 +157,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 - **Login rate limiting is in-memory** per process (resets on restart, not shared across instances).
 - **No signup, password reset, MFA, user management or tenant switcher UI.** A session belongs to one tenant; the login API accepts an optional `tenant` slug for users with several memberships, but the demo users have one each.
 - **`users` and `sessions` are global tables without RLS** (they are needed before a tenant is known); the app role can read but not modify `users`.
-- **API keys are unscoped** (any key can ingest any event type) and have no expiry.
+- **API keys have a single scope today** (`ingest`), so scoping is forward-compatible structure, not fine-grained authorization yet. There are no per-key rate limits.
 - **Docker image is single-stage** and keeps dev dependencies, because the custom server and scripts run through `tsx`. It is meant for local demos, not production.
 - **`npm audit`** reports 4 moderate advisories in `drizzle-kit`'s transitive `@esbuild-kit/*` packages (dev-only migration generator, not used at runtime). There are no high or critical findings; CI fails on high/critical.
 - The demo API keys and passwords are intentionally public and for local use only.
@@ -166,7 +166,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 
 - Tenant switcher for users with several memberships, plus member invite/role management for admins.
 - Rollup tables (per minute/hour) and time-based partitioning for `events`, with a retention job.
-- Scoped, expiring API keys and per-key ingest rate limits.
+- Per-key ingest rate limits, and additional key scopes once endpoints beyond ingest exist.
 - Shared rate limiting (Postgres or Redis) and a multi-instance test for the realtime fan-out.
 - Multi-stage Docker image without dev dependencies.
 

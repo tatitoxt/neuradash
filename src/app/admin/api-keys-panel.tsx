@@ -13,12 +13,15 @@ export function ApiKeysPanel({ initialKeys }: { initialKeys: ApiKeyDTO[] }) {
   async function create(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const formEl = event.currentTarget;
-    const name = String(new FormData(formEl).get("name") ?? "");
+    const data = new FormData(formEl);
+    const name = String(data.get("name") ?? "");
+    const ttlDays = Number(data.get("ttl") ?? "0");
+    const expiresAt = ttlDays > 0 ? new Date(Date.now() + ttlDays * 86_400_000).toISOString() : undefined;
     setError(null);
     const res = await fetch("/api/admin/api-keys", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, expiresAt }),
     });
     if (!res.ok) return setError("Could not create key");
     const body = (await res.json()) as { key: string; apiKey: ApiKeyDTO };
@@ -45,6 +48,17 @@ export function ApiKeysPanel({ initialKeys }: { initialKeys: ApiKeyDTO[] }) {
           aria-label="Key name"
           className="flex-1 rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm"
         />
+        <select
+          name="ttl"
+          aria-label="Expiry"
+          defaultValue="0"
+          className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm"
+        >
+          <option value="0">No expiry</option>
+          <option value="30">30 days</option>
+          <option value="90">90 days</option>
+          <option value="365">1 year</option>
+        </select>
         <button type="submit" className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-500">
           Create key
         </button>
@@ -60,7 +74,8 @@ export function ApiKeysPanel({ initialKeys }: { initialKeys: ApiKeyDTO[] }) {
           <tr>
             <th className="py-2">Name</th>
             <th>Prefix</th>
-            <th>Created</th>
+            <th>Scopes</th>
+            <th>Expires</th>
             <th>Last used</th>
             <th />
           </tr>
@@ -70,7 +85,10 @@ export function ApiKeysPanel({ initialKeys }: { initialKeys: ApiKeyDTO[] }) {
             <tr key={k.id} data-testid="api-key-row">
               <td className="py-2">{k.name}</td>
               <td className="font-mono text-slate-400">{k.prefix}…</td>
-              <td className="text-slate-400">{date.format(new Date(k.createdAt))}</td>
+              <td className="text-slate-400">{k.scopes.join(", ")}</td>
+              <td className={k.expiresAt && new Date(k.expiresAt) < new Date() ? "text-red-400" : "text-slate-400"}>
+                {k.expiresAt ? date.format(new Date(k.expiresAt)) : "never"}
+              </td>
               <td className="text-slate-400">{k.lastUsedAt ? date.format(new Date(k.lastUsedAt)) : "never"}</td>
               <td className="text-right">
                 {k.revokedAt ? (
