@@ -39,6 +39,17 @@ NeuraDash is a small, complete implementation of that story: ingest → persist 
 - **Reconnect + backfill**: the browser reconnects with jittered exponential backoff and sends `resume { lastEventId }`; the server replies with the missed events (capped at 500, after which the client resyncs aggregates).
 - **Dashboard**: KPI cards (events, error rate, revenue, active sources), event-volume and revenue charts (Recharts), live event feed and a 15m / 1h / 24h / 7d range filter.
 - **Tenant switcher**: `/api/me` lists every membership; a header dropdown (visible with 2+ tenants) calls `POST /api/auth/switch-tenant` to re-point the session at another tenant — role is re-resolved per request, so switching from an admin tenant to a viewer tenant drops admin rights immediately.
+- **Threshold alerts** (admin only): `GET/POST /api/admin/alerts`,
+  `PATCH/DELETE /api/admin/alerts/{id}` manage rules over the rollup metrics —
+  `events`, `errors`, `revenue` or `error_rate` (errors/events %) — compared
+  with `>`, `>=`, `<` or `<=` against a threshold. Rules are evaluated inside
+  the ingest transaction against the minute rollups just written, so firing is
+  atomic with the data that triggered it. A firing rule records an
+  `alert_events` row (returned by `GET /api/admin/alerts` under `recent`),
+  updates `last_fired_at` for cooldown (`cooldownMinutes`, default 15), and —
+  after commit — POSTs a JSON payload to its `webhookUrl` with a 3 s timeout;
+  delivery success is marked on the event, and webhook failures never affect
+  ingest.
 - **Member administration** (admin only): `GET/POST /api/admin/members` lists members and invites by email — an existing account joins the tenant directly, a new one is created with a temporary password shown once (no mailer). `PATCH/DELETE /api/admin/members/{id}` change roles or remove members (sessions in that tenant are killed); admins cannot change or remove themselves.
 - **Admin page**: create (shown once, with optional 30/90/365-day expiry and a per-minute ingest limit) and revoke ingest API keys; invite members, change roles and remove members.
 - **Synthetic data**: deterministic seed (2 tenants, 4 users — `multi@demo.test` belongs to both tenants to demo the switcher — 6,000 events per tenant over 7 days) and a generator that keeps posting events through the public ingest API.
@@ -170,6 +181,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 - **No signup, password reset, MFA or self-service profile.** Invites are the only way in: no mailer exists, so the temporary password is shown once to the inviting admin and must be handed over manually.
 - **`users` and `sessions` are global tables without RLS** (they are needed before a tenant is known); the app role can read `users` and insert new rows for invites, but cannot update or delete them. Membership writes stay tenant-scoped by RLS.
 - **API keys have a single scope today** (`ingest`), so scoping is forward-compatible structure, not fine-grained authorization yet.
+- **Alert delivery is best-effort**: a firing is recorded transactionally, but the webhook POST happens after commit with one attempt and no retry; `delivered=false` on an `alert_events` row marks the failure.
 - **Docker image still ships `tsx` and the prod `node_modules`** (the custom server and db scripts run through it); devDependencies are excluded via the multi-stage build. It is meant for local demos, not production.
 - **`npm audit`** reports 4 moderate advisories in `drizzle-kit`'s transitive `@esbuild-kit/*` packages (dev-only migration generator, not used at runtime). There are no high or critical findings; CI fails on high/critical.
 - The demo API keys and passwords are intentionally public and for local use only.

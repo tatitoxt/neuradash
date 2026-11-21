@@ -1,5 +1,6 @@
 import { and, desc, eq, gt, inArray, lt, sql } from "drizzle-orm";
 import { withTenant } from "@/lib/db/client";
+import { evaluateAlertRules, type FiredAlert } from "@/lib/data/alerts";
 import { events, type EventRow } from "@/lib/db/schema";
 import type { IngestEvent } from "@/lib/ingest/schema";
 import type { EventDTO } from "@/lib/live/types";
@@ -23,7 +24,11 @@ export function toDTO(row: EventRow): EventDTO {
  * Persists events for one tenant and queues a NOTIFY that Postgres delivers after commit.
  * The payload only carries ids; listeners re-read rows under the tenant's RLS context.
  */
-export async function insertEvents(tenantId: string, input: IngestEvent[]): Promise<EventDTO[]> {
+export async function insertEvents(
+  tenantId: string,
+  input: IngestEvent[],
+  firedOut?: FiredAlert[],
+): Promise<EventDTO[]> {
   return withTenant(tenantId, async (tx) => {
     // Serialize a tenant's writes so its ids become visible in increasing order; otherwise a
     // concurrent insert could commit a lower id after a client resumed past a higher one.
@@ -59,6 +64,7 @@ export async function insertEvents(tenantId: string, input: IngestEvent[]): Prom
           revenue = metric_rollups.revenue + excluded.revenue,
           sources = (select array_agg(distinct s) from unnest(metric_rollups.sources || excluded.sources) s)`);
     }
+    if (firedOut) await evaluateAlertRules(tx, tenantId, [...byMinute.keys()], firedOut);
     const payload = JSON.stringify({ tenantId, ids: rows.map((r) => r.id) });
     await tx.execute(sql`select pg_notify(${EVENTS_CHANNEL}, ${payload})`);
     return rows.map(toDTO);

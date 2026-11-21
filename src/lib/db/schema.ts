@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   bigint,
   bigserial,
+  boolean,
   check,
   doublePrecision,
   index,
@@ -12,6 +13,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -140,3 +142,42 @@ export const metricRollups = pgTable(
 
 export type Role = (typeof roleEnum.enumValues)[number];
 export type EventRow = typeof events.$inferSelect;
+
+export const alertRules = pgTable(
+  "alert_rules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    metric: text("metric").notNull(),
+    op: text("op").notNull(),
+    threshold: doublePrecision("threshold").notNull(),
+    webhookUrl: text("webhook_url").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    cooldownMinutes: integer("cooldown_minutes").notNull().default(15),
+    lastFiredAt: timestamp("last_fired_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique("alert_rules_tenant_name").on(t.tenantId, t.name)],
+);
+
+export const alertEvents = pgTable(
+  "alert_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    ruleId: uuid("rule_id")
+      .notNull()
+      .references(() => alertRules.id, { onDelete: "cascade" }),
+    metric: text("metric").notNull(),
+    observed: doublePrecision("observed").notNull(),
+    threshold: doublePrecision("threshold").notNull(),
+    delivered: boolean("delivered").notNull().default(false),
+    firedAt: timestamp("fired_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("alert_events_tenant_idx").on(t.tenantId, t.firedAt)],
+);

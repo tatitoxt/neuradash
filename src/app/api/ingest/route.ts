@@ -1,4 +1,5 @@
 import { consumeIngestToken, resolveApiKey } from "@/lib/data/api-keys";
+import { deliverAlert, type FiredAlert } from "@/lib/data/alerts";
 import { insertEvents } from "@/lib/data/events";
 import { apiError, json, readJson } from "@/lib/http";
 import { parseIngestBody } from "@/lib/ingest/schema";
@@ -29,6 +30,12 @@ export async function POST(req: Request): Promise<Response> {
   const parsed = parseIngestBody(raw.body);
   if (!parsed.ok) return apiError(422, "invalid_event", parsed.error);
 
-  const stored = await insertEvents(resolved.tenantId, parsed.events);
-  return json({ accepted: stored.length, ids: stored.map((e) => e.id) }, 202);
+  const fired: FiredAlert[] = [];
+  const stored = await insertEvents(resolved.tenantId, parsed.events, fired);
+  // Webhooks go out after commit; delivery failures are recorded on the alert event.
+  for (const alert of fired) void deliverAlert(resolved.tenantId, alert);
+  return json(
+    { accepted: stored.length, ids: stored.map((e) => e.id), alertsFired: fired.length },
+    202,
+  );
 }
