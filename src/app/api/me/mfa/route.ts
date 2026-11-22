@@ -1,12 +1,13 @@
 import { z } from "zod";
-import { beginEnrollment, disableMfa, mfaEnabled } from "@/lib/auth/mfa";
+import { beginEnrollment, disableMfa, mfaEnabled, recoveryCodeCount } from "@/lib/auth/mfa";
 import { apiError, json, readJson, requireSession } from "@/lib/http";
 
-/** GET — whether TOTP MFA currently gates this user's sign-ins. */
+/** GET — whether TOTP MFA gates sign-ins, plus remaining recovery codes. */
 export async function GET(req: Request): Promise<Response> {
   const auth = await requireSession(req);
   if (!auth.ok) return auth.response;
-  return json({ enabled: await mfaEnabled(auth.session.userId) });
+  const enabled = await mfaEnabled(auth.session.userId);
+  return json({ enabled, codesRemaining: enabled ? await recoveryCodeCount(auth.session.userId) : 0 });
 }
 
 /** POST — start enrollment: returns a fresh secret + otpauth URI (disabled

@@ -12,8 +12,9 @@ export async function POST(req: Request): Promise<Response> {
   if (!raw.ok) return raw.response;
   const parsed = bodySchema.safeParse(raw.body);
   if (!parsed.success) return apiError(400, "invalid_request", "code is required");
-  if (!(await confirmEnrollment(auth.session.userId, parsed.data.code.replace(/\s/g, "")))) {
+  const codes = await confirmEnrollment(auth.session.userId, parsed.data.code.replace(/\s/g, ""));
+  if (!codes) {
     return apiError(400, "invalid_code", "the code does not match — check the secret and try again");
   }
-  return json({ enabled: true });
+  return json({ enabled: true, recoveryCodes: codes });
 }

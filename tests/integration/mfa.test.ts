@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { beginEnrollment, confirmEnrollment, disableMfa, mfaEnabled } from "@/lib/auth/mfa";
+import {
+  beginEnrollment,
+  confirmEnrollment,
+  disableMfa,
+  mfaEnabled,
+  recoveryCodeCount,
+  regenerateRecoveryCodes,
+} from "@/lib/auth/mfa";
 import { totpNow } from "@/lib/auth/totp";
 import { completeMfaLogin, login } from "@/lib/auth/session";
 import { getDb } from "@/lib/db/client";
@@ -14,8 +21,9 @@ async function enrolledUser() {
   await reseed(0);
   const [user] = await getDb().select().from(users).where(eq(users.email, EMAIL)).limit(1);
   const enrollment = await beginEnrollment(user!.id, user!.email);
-  expect(await confirmEnrollment(user!.id, totpNow(enrollment.secret))).toBe(true);
-  return { user: user!, secret: enrollment.secret };
+  const codes = await confirmEnrollment(user!.id, totpNow(enrollment.secret));
+  expect(codes).toHaveLength(8);
+  return { user: user!, secret: enrollment.secret, codes: codes! };
 }
 
 describe("TOTP MFA", () => {
@@ -72,5 +80,63 @@ describe("TOTP MFA", () => {
     const result = await login(user.email, DEMO_PASSWORD);
     expect(result.ok).toBe(true);
     if (result.ok) expect("mfa" in result).toBe(false);
+  });
+
+  it("issues one-shot recovery codes at enrollment and accepts one at login", async () => {
+    const { user, codes } = await enrolledUser();
+    expect(await recoveryCodeCount(user.id)).toBe(8);
+
+    const step1 = await login(user.email, DEMO_PASSWORD);
+    if (!step1.ok || !("mfa" in step1)) throw new Error("expected mfa challenge");
+
+    const step2 = await completeMfaLogin(step1.challenge, codes[0]!);
+    expect(step2.ok).toBe(true);
+    expect(await recoveryCodeCount(user.id)).toBe(7);
+
+    // The same code cannot be replayed.
+    const step1b = await login(user.email, DEMO_PASSWORD);
+    if (!step1b.ok || !("mfa" in step1b)) throw new Error("expected mfa challenge");
+    const replay = await completeMfaLogin(step1b.challenge, codes[0]!);
+    expect(replay.ok).toBe(false);
+    if (!replay.ok) expect(replay.reason).toBe("invalid_code");
+  });
+
+  it("regenerating codes invalidates the whole previous set", async () => {
+    const { user, codes } = await enrolledUser();
+    const fresh = await regenerateRecoveryCodes(user.id);
+    expect(fresh).toHaveLength(8);
+
+    const step1 = await login(user.email, DEMO_PASSWORD);
+    if (!step1.ok || !("mfa" in step1)) throw new Error("expected mfa challenge");
+    const stale = await completeMfaLogin(step1.challenge, codes[1]!);
+    expect(stale.ok).toBe(false);
+
+    const step1b = await login(user.email, DEMO_PASSWORD);
+    if (!step1b.ok || !("mfa" in step1b)) throw new Error("expected mfa challenge");
+    const works = await completeMfaLogin(step1b.challenge, fresh![0]!);
+    expect(works.ok).toBe(true);
+  });
+
+  it("dropping MFA clears every recovery code", async () => {
+    const { user, codes } = await enrolledUser();
+    expect(await disableMfa(user.id, DEMO_PASSWORD)).toBe(true);
+    expect(await recoveryCodeCount(user.id)).toBe(0);
+
+    // Re-enrolling produces a fresh set; old codes stay dead.
+    const enrollment = await beginEnrollment(user.id, user.email);
+    const fresh = await confirmEnrollment(user.id, totpNow(enrollment.secret));
+    expect(fresh).toHaveLength(8);
+    expect(fresh).not.toContain(codes[0]!);
+
+    const step1 = await login(user.email, DEMO_PASSWORD);
+    if (!step1.ok || !("mfa" in step1)) throw new Error("expected mfa challenge");
+    const stale = await completeMfaLogin(step1.challenge, codes[0]!);
+    expect(stale.ok).toBe(false);
+  });
+
+  it("refuses to regenerate codes while MFA is off", async () => {
+    await reseed(0);
+    const [user] = await getDb().select().from(users).where(eq(users.email, EMAIL)).limit(1);
+    expect(await regenerateRecoveryCodes(user!.id)).toBeNull();
   });
 });
