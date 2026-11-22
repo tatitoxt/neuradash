@@ -1,4 +1,5 @@
 import http from "node:http";
+import net from "node:net";
 import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as alertsRoute from "@/app/api/admin/alerts/route";
@@ -237,6 +238,36 @@ describe("admin route validation", () => {
     const fired = (await listAlertEvents(acmeTenantId)).filter((e) => e.ruleId === rule.id);
     expect(fired).toHaveLength(1);
   });
+});
+
+describe("webhook delivery deadline", () => {
+  it("gives up after a hard deadline when the endpoint drips its response", async () => {
+    const drip = net.createServer((socket) => {
+      const timer = setInterval(() => socket.write("X"), 200);
+      socket.on("close", () => clearInterval(timer));
+      socket.on("error", () => clearInterval(timer));
+    });
+    await new Promise<void>((r) => drip.listen(0, "127.0.0.1", r));
+    const port = (drip.address() as AddressInfo).port;
+    try {
+      const { rule } = await (await createRule({
+        name: "drip-hook", metric: "events", op: ">=", threshold: 1,
+        webhookUrl: "http://127.0.0.1:1/drip", cooldownMinutes: 0,
+      })).json();
+      await ingest({ events: [{ type: "signup" }] });
+      const evt = (await listAlertEvents(acmeTenantId)).find((e) => e.ruleId === rule.id);
+      const started = Date.now();
+      await deliverAlert(acmeTenantId, {
+        ruleId: rule.id, alertEventId: evt!.id, name: rule.name, metric: "events",
+        op: ">=", threshold: 1, observed: 1, webhookUrl: `http://127.0.0.1:${port}/drip`,
+      });
+      expect(Date.now() - started).toBeLessThan(5_000);
+      const after = (await listAlertEvents(acmeTenantId)).find((e) => e.id === evt!.id);
+      expect(after!.delivered).toBe(false);
+    } finally {
+      await new Promise((r) => drip.close(r));
+    }
+  }, 10_000);
 });
 
 describe("webhook destination guard", () => {
