@@ -148,7 +148,7 @@ describe("alert delivery", () => {
     const res = await createRule({ name: "delivered", metric: "events", op: ">=", threshold: 1, webhookUrl: "http://127.0.0.1:1/hook", cooldownMinutes: 0 });
     const { rule } = await res.json();
     await ingest({ events: [{ type: "signup" }] });
-    const [evt] = await listAlertEvents(acmeTenantId, 1);
+    const evt = (await listAlertEvents(acmeTenantId)).find((e) => e.ruleId === rule.id);
     const fired: FiredAlert = {
       ruleId: rule.id,
       alertEventId: evt!.id,
@@ -163,7 +163,7 @@ describe("alert delivery", () => {
     expect(received).toHaveLength(1);
     const payload = JSON.parse(received[0]!.body);
     expect(payload).toMatchObject({ type: "neuradash.alert", rule: "delivered", metric: "events" });
-    const [after] = await listAlertEvents(acmeTenantId, 1);
+    const after = (await listAlertEvents(acmeTenantId)).find((e) => e.id === evt!.id);
     expect(after!.delivered).toBe(true);
   });
 
@@ -171,12 +171,12 @@ describe("alert delivery", () => {
     const res = await createRule({ name: "dead-end", metric: "events", op: ">=", threshold: 1, webhookUrl: "http://127.0.0.1:1/hook", cooldownMinutes: 0 });
     const { rule } = await res.json();
     await ingest({ events: [{ type: "signup" }] });
-    const [evt] = await listAlertEvents(acmeTenantId, 1);
+    const evt = (await listAlertEvents(acmeTenantId)).find((e) => e.ruleId === rule.id);
     await deliverAlert(acmeTenantId, {
       ruleId: rule.id, alertEventId: evt!.id, name: rule.name, metric: "events",
       op: ">=", threshold: 1, observed: 1, webhookUrl: rule.webhookUrl,
     });
-    const [after] = await listAlertEvents(acmeTenantId, 1);
+    const after = (await listAlertEvents(acmeTenantId)).find((e) => e.id === evt!.id);
     expect(after!.delivered).toBe(false);
   });
 });
@@ -208,8 +208,9 @@ describe("alert delivery retries", () => {
       // to record attempt 1 with a scheduled retry.
       let evt;
       for (let i = 0; i < 40; i++) {
-        [evt] = await listAlertEvents(acmeTenantId, 1);
-        if (evt && evt.ruleId === rule.id && evt.attempts >= 1) break;
+        // Other rules from earlier tests can fire on the same ingest, so match by rule id.
+        evt = (await listAlertEvents(acmeTenantId)).find((e) => e.ruleId === rule.id);
+        if (evt && evt.attempts >= 1) break;
         await new Promise((r) => setTimeout(r, 100));
       }
       expect(evt?.attempts).toBe(1);
@@ -231,7 +232,7 @@ describe("alert delivery retries", () => {
         await client.end();
       }
       expect(await sweepAlertRetries()).toBeGreaterThanOrEqual(1);
-      const [after] = await listAlertEvents(acmeTenantId, 1);
+      const after = (await listAlertEvents(acmeTenantId)).find((e) => e.id === evt!.id);
       expect(after!).toMatchObject({ id: evt!.id, delivered: true, attempts: 2 });
       expect(after!.nextAttemptAt).toBeNull();
       expect(calls).toBe(2);
