@@ -1,6 +1,7 @@
 import { and, eq, gt, ne, sql } from "drizzle-orm";
 import { getDb, withTenant, withUser } from "@/lib/db/client";
 import { memberships, sessions, tenants, users, type Role } from "@/lib/db/schema";
+import { consumeMfaChallenge, createMfaChallenge, mfaEnabled } from "./mfa";
 import { hashPassword, verifyPassword } from "./password";
 import { generateSessionToken, sha256Hex } from "./tokens";
 
@@ -21,7 +22,15 @@ export type Session = {
 
 export type LoginResult =
   | { ok: true; token: string; session: Session }
-  | { ok: false; reason: "invalid_credentials" | "no_membership" };
+  | { ok: true; mfa: true; challenge: string }
+  | { ok: false; reason: LoginFailure };
+
+export type LoginFailure =
+  | "invalid_credentials"
+  | "no_membership"
+  | "invalid_challenge"
+  | "too_many_attempts"
+  | "invalid_code";
 
 // Verifying against a fixed hash keeps response time similar for unknown emails.
 const DUMMY_HASH =
@@ -44,12 +53,41 @@ export async function login(email: string, password: string, tenantSlug?: string
   const membership = tenantSlug ? own.find((m) => m.slug === tenantSlug) : own[0];
   if (!membership) return { ok: false, reason: "no_membership" };
 
+  if (await mfaEnabled(user.id)) {
+    // Password verified — the session is only minted after the TOTP step.
+    const challenge = await createMfaChallenge(user.id, membership.slug);
+    return { ok: true, mfa: true, challenge };
+  }
+  return createSession(user.id, membership.tenantId);
+}
+
+/** Second step of sign-in when MFA is enabled: consumes the one-shot
+ * challenge and mints the session for the tenant chosen at the password step. */
+export async function completeMfaLogin(challenge: string, code: string): Promise<LoginResult> {
+  const result = await consumeMfaChallenge(challenge, code);
+  if (!result.ok) return { ok: false, reason: result.reason };
+
+  const own = await withUser(result.userId, (tx) =>
+    tx
+      .select({ tenantId: tenants.id, slug: tenants.slug })
+      .from(memberships)
+      .innerJoin(tenants, eq(tenants.id, memberships.tenantId))
+      .where(eq(memberships.userId, result.userId))
+      .orderBy(tenants.slug),
+  );
+  const membership = result.tenantSlug ? own.find((m) => m.slug === result.tenantSlug) : own[0];
+  if (!membership) return { ok: false, reason: "no_membership" };
+  return createSession(result.userId, membership.tenantId);
+}
+
+async function createSession(userId: string, tenantId: string): Promise<LoginResult> {
+  const db = getDb();
   const token = generateSessionToken();
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
   await db.insert(sessions).values({
     tokenHash: sha256Hex(token),
-    userId: user.id,
-    tenantId: membership.tenantId,
+    userId,
+    tenantId,
     expiresAt,
   });
   const session = await getSession(token);

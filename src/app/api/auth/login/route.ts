@@ -21,6 +21,10 @@ export async function POST(req: Request): Promise<Response> {
 
   const result = await login(email, parsed.data.password, parsed.data.tenant);
   if (!result.ok) return apiError(401, "invalid_credentials", "invalid email or password");
+  if ("mfa" in result) {
+    // Password verified; no session or attempt reset until the TOTP step lands.
+    return json({ mfaRequired: true, challenge: result.challenge });
+  }
 
   await resetLoginAttempts(email);
   const { tenantSlug, role, name } = result.session;
