@@ -20,7 +20,7 @@ const EMAIL = "admin@acme.test";
 async function enrolledUser() {
   await reseed(0);
   const [user] = await getDb().select().from(users).where(eq(users.email, EMAIL)).limit(1);
-  const enrollment = await beginEnrollment(user!.id, user!.email);
+  const enrollment = (await beginEnrollment(user!.id, user!.email))!;
   const codes = await confirmEnrollment(user!.id, totpNow(enrollment.secret));
   expect(codes).toHaveLength(8);
   return { user: user!, secret: enrollment.secret, codes: codes! };
@@ -60,6 +60,26 @@ describe("TOTP MFA", () => {
     const fifth = await completeMfaLogin(step1.challenge, "000000");
     expect(fifth.ok).toBe(false);
     if (!fifth.ok) expect(fifth.reason).toBe("too_many_attempts");
+  });
+
+  it("refuses to replay an authenticator code on a second login", async () => {
+    const { user, secret } = await enrolledUser();
+    const code = totpNow(secret);
+    const first = await login(user.email, DEMO_PASSWORD);
+    if (!first.ok || !("mfa" in first)) throw new Error("expected mfa challenge");
+    expect((await completeMfaLogin(first.challenge, code)).ok).toBe(true);
+
+    const second = await login(user.email, DEMO_PASSWORD);
+    if (!second.ok || !("mfa" in second)) throw new Error("expected mfa challenge");
+    const replay = await completeMfaLogin(second.challenge, code);
+    expect(replay.ok).toBe(false);
+    if (!replay.ok) expect(replay.reason).toBe("invalid_code");
+  });
+
+  it("does not let enrollment replace a confirmed factor", async () => {
+    const { user } = await enrolledUser();
+    expect(await beginEnrollment(user.id, user.email)).toBeNull();
+    expect(await mfaEnabled(user.id)).toBe(true);
   });
 
   it("does not gate login before enrollment is confirmed", async () => {
@@ -123,7 +143,7 @@ describe("TOTP MFA", () => {
     expect(await recoveryCodeCount(user.id)).toBe(0);
 
     // Re-enrolling produces a fresh set; old codes stay dead.
-    const enrollment = await beginEnrollment(user.id, user.email);
+    const enrollment = (await beginEnrollment(user.id, user.email))!;
     const fresh = await confirmEnrollment(user.id, totpNow(enrollment.secret));
     expect(fresh).toHaveLength(8);
     expect(fresh).not.toContain(codes[0]!);

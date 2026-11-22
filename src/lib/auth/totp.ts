@@ -68,16 +68,22 @@ export function totpNow(secret: string, at: Date = new Date()): string {
  * side — a small clock skew between server and authenticator is normal.
  */
 export function verifyTotp(secret: string, code: string, at: Date = new Date()): boolean {
+  return matchTotpStep(secret, code, at) !== null;
+}
+
+/** The time step the code belongs to (within the ±1 window), or null. Callers
+ * persist it to refuse replays of an already-used code. */
+export function matchTotpStep(secret: string, code: string, at: Date = new Date()): number | null {
   const clean = code.replace(/\s/g, "");
-  if (!/^\d{6}$/.test(clean)) return false;
+  if (!/^\d{6}$/.test(clean)) return null;
   const key = base32Decode(secret);
   const counter = Math.floor(at.getTime() / 1000 / STEP_SECONDS);
   const candidate = Buffer.from(clean);
   for (const step of [counter - 1, counter, counter + 1]) {
     const valid = Buffer.from(hotp(key, BigInt(step)));
-    if (timingSafeEqual(valid, candidate)) return true;
+    if (timingSafeEqual(valid, candidate)) return step;
   }
-  return false;
+  return null;
 }
 
 /** otpauth:// URI for manual entry or QR rendering client-side. */
