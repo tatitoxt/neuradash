@@ -4,7 +4,7 @@ import { getDb } from "@/lib/db/client";
 import { mfaChallenges, users } from "@/lib/db/schema";
 import { verifyPassword } from "./password";
 import { generateSessionToken, sha256Hex } from "./tokens";
-import { generateTotpSecret, totpUri, verifyTotp } from "./totp";
+import { generateTotpSecret, matchTotpStep, totpUri, verifyTotp } from "./totp";
 
 export const MFA_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 export const MFA_MAX_ATTEMPTS = 5;
@@ -43,9 +43,12 @@ export async function mfaEnabled(userId: string): Promise<boolean> {
 
 export type Enrollment = { secret: string; uri: string };
 
-/** Start (or restart) enrollment: stores a disabled secret and returns it
- * for display. The secret only gates logins once confirmed. */
-export async function beginEnrollment(userId: string, email: string): Promise<Enrollment> {
+/** Start (or restart) a pending enrollment: stores a disabled secret and
+ * returns it for display. The secret only gates logins once confirmed.
+ * Returns null when MFA is already enabled — replacing a confirmed factor
+ * goes through the password-gated disable first. */
+export async function beginEnrollment(userId: string, email: string): Promise<Enrollment | null> {
+  if (await mfaEnabled(userId)) return null;
   const secret = generateTotpSecret();
   await getDb().execute(sql`select totp_begin(${userId}::uuid, ${secret})`);
   return { secret, uri: totpUri(secret, email) };
@@ -114,19 +117,28 @@ export type MfaResult =
  * consume the challenge atomically (DELETE ... RETURNING). */
 export async function consumeMfaChallenge(token: string, code: string): Promise<MfaResult> {
   const db = getDb();
+  // Reserve this attempt atomically, so parallel guesses each count.
   const [challenge] = await db
-    .select()
-    .from(mfaChallenges)
+    .update(mfaChallenges)
+    .set({ attempts: sql`${mfaChallenges.attempts} + 1` })
     .where(and(eq(mfaChallenges.tokenHash, sha256Hex(token)), gt(mfaChallenges.expiresAt, sql`now()`)))
-    .limit(1);
+    .returning();
   if (!challenge) return { ok: false, reason: "invalid_challenge" };
-  if (challenge.attempts >= MFA_MAX_ATTEMPTS) return { ok: false, reason: "too_many_attempts" };
+  if (challenge.attempts > MFA_MAX_ATTEMPTS) return { ok: false, reason: "too_many_attempts" };
 
   const res = await db.execute<{ secret: string; enabled: boolean }>(
     sql`select secret, enabled from totp_state(${challenge.userId}::uuid)`,
   );
   const row = res.rows[0];
-  const totpOk = !!row && row.enabled && verifyTotp(row.secret, code);
+  const step = row?.enabled ? matchTotpStep(row.secret, code) : null;
+  // Each time step is accepted once per user, so an observed code cannot be replayed.
+  const totpOk =
+    step !== null &&
+    (
+      await db.execute<{ totp_use_step: boolean }>(
+        sql`select totp_use_step(${challenge.userId}::uuid, ${step})`,
+      )
+    ).rows[0]?.totp_use_step === true;
   // A valid TOTP wins; otherwise the same field accepts a one-shot recovery
   // code, consumed atomically so concurrent guesses cannot reuse it.
   const recoveryOk =
@@ -137,14 +149,17 @@ export async function consumeMfaChallenge(token: string, code: string): Promise<
       )
     ).rows[0]?.totp_codes_consume === true;
   if (!totpOk && !recoveryOk) {
-    const attempts = challenge.attempts + 1;
-    if (attempts >= MFA_MAX_ATTEMPTS) {
+    if (challenge.attempts >= MFA_MAX_ATTEMPTS) {
       await db.delete(mfaChallenges).where(eq(mfaChallenges.id, challenge.id));
-    } else {
-      await db.update(mfaChallenges).set({ attempts }).where(eq(mfaChallenges.id, challenge.id));
+      return { ok: false, reason: "too_many_attempts" };
     }
-    return { ok: false, reason: attempts >= MFA_MAX_ATTEMPTS ? "too_many_attempts" : "invalid_code" };
+    return { ok: false, reason: "invalid_code" };
   }
-  await db.delete(mfaChallenges).where(eq(mfaChallenges.id, challenge.id));
+  // Only the request that actually deletes the challenge may mint a session.
+  const consumed = await db
+    .delete(mfaChallenges)
+    .where(eq(mfaChallenges.id, challenge.id))
+    .returning({ id: mfaChallenges.id });
+  if (consumed.length === 0) return { ok: false, reason: "invalid_challenge" };
   return { ok: true, userId: challenge.userId, tenantSlug: challenge.tenantSlug };
 }
