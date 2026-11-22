@@ -180,7 +180,9 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 - **Live chart updates are approximate between resyncs**: live events update KPIs and the current bucket client-side; the dashboard re-fetches exact aggregates every 60 s and after a reconnect.
 - **No signup, password reset, MFA or self-service profile.** Invites are the only way in: no mailer exists, so the temporary password is shown once to the inviting admin and must be handed over manually.
 - **`users` and `sessions` are global tables without RLS** (they are needed before a tenant is known); the app role can read `users` and insert new rows for invites, but cannot update or delete them. Membership writes stay tenant-scoped by RLS.
-- **API keys have a single scope today** (`ingest`), so scoping is forward-compatible structure, not fine-grained authorization yet.
+- **API keys carry `ingest` and/or `read` scopes**: `ingest` writes events; `read`
+  authorizes `GET /api/metrics` and `GET /api/events` without a session. Admin/member
+  management still requires a session.
 - **Alert delivery is best-effort**: a firing is recorded transactionally, but the webhook POST happens after commit with one attempt and no retry; `delivered=false` on an `alert_events` row marks the failure.
 - **Docker image still ships `tsx` and the prod `node_modules`** (the custom server and db scripts run through it); devDependencies are excluded via the multi-stage build. It is meant for local demos, not production.
 - **`npm audit`** reports 4 moderate advisories in `drizzle-kit`'s transitive `@esbuild-kit/*` packages (dev-only migration generator, not used at runtime). There are no high or critical findings; CI fails on high/critical.
