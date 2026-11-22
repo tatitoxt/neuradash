@@ -75,6 +75,7 @@ export const userTotp = pgTable("user_totp", {
   secret: text("secret").notNull(),
   enabled: boolean("enabled").notNull().default(false),
   enabledAt: timestamp("enabled_at", { withTimezone: true }),
+  lastStep: bigint("last_step", { mode: "number" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -208,6 +209,7 @@ export const alertEvents = pgTable(
       .notNull()
       .references(() => alertRules.id, { onDelete: "cascade" }),
     metric: text("metric").notNull(),
+    op: text("op"),
     observed: doublePrecision("observed").notNull(),
     threshold: doublePrecision("threshold").notNull(),
     delivered: boolean("delivered").notNull().default(false),

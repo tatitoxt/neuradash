@@ -99,6 +99,13 @@
       "when": 1796510000000,
       "tag": "0013_recovery_codes",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1796600000000,
+      "tag": "0014_review_hardening",
+      "breakpoints": true
     }
   ]
 }
