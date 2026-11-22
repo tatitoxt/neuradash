@@ -11,11 +11,16 @@ export function MfaForm() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [codesRemaining, setCodesRemaining] = useState(0);
+  const [freshCodes, setFreshCodes] = useState<string[] | null>(null);
 
   useEffect(() => {
     fetch("/api/me/mfa")
       .then((r) => (r.ok ? r.json() : null))
-      .then((b: { enabled?: boolean } | null) => setEnabled(b?.enabled === true))
+      .then((b: { enabled?: boolean; codesRemaining?: number } | null) => {
+        setEnabled(b?.enabled === true);
+        setCodesRemaining(b?.codesRemaining ?? 0);
+      })
       .catch(() => setEnabled(false));
   }, []);
 
@@ -45,10 +50,28 @@ export function MfaForm() {
       setStatus({ kind: "err", text: body.message ?? "Invalid code" });
       return;
     }
+    const body = (await res.json()) as { recoveryCodes?: string[] };
     setEnrollment(null);
     setCode("");
     setEnabled(true);
+    setFreshCodes(body.recoveryCodes ?? null);
+    setCodesRemaining(body.recoveryCodes?.length ?? 0);
     setStatus({ kind: "ok", text: "Two-factor authentication is on." });
+  }
+
+  async function regenerate() {
+    setBusy(true);
+    setStatus(null);
+    const res = await fetch("/api/me/mfa/codes", { method: "POST" });
+    setBusy(false);
+    if (!res.ok) {
+      setStatus({ kind: "err", text: "Could not generate new codes" });
+      return;
+    }
+    const body = (await res.json()) as { recoveryCodes?: string[] };
+    setFreshCodes(body.recoveryCodes ?? null);
+    setCodesRemaining(body.recoveryCodes?.length ?? 0);
+    setStatus({ kind: "ok", text: "New recovery codes generated — the old ones no longer work." });
   }
 
   async function disable() {
@@ -120,9 +143,47 @@ export function MfaForm() {
         </div>
       ) : null}
 
+      {freshCodes ? (
+        <div className="space-y-2 rounded-md border border-amber-800 bg-amber-950/40 p-3">
+          <p className="text-sm font-medium text-amber-300">
+            Recovery codes — save them now, they are shown only once.
+          </p>
+          <p className="text-xs text-slate-400">
+            Each code signs you in once if you lose your authenticator.
+          </p>
+          <div className="grid grid-cols-2 gap-1">
+            {freshCodes.map((c) => (
+              <code key={c} className="rounded bg-slate-950 px-2 py-1 text-center text-xs text-sky-300">
+                {c}
+              </code>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => setFreshCodes(null)}
+            className="text-xs text-slate-400 underline hover:text-slate-300"
+          >
+            I saved them — hide
+          </button>
+        </div>
+      ) : null}
+
       {enabled === true ? (
         <div className="space-y-3">
           <p className="text-sm text-emerald-400">MFA is on — sign-ins require your authenticator code.</p>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-slate-400">
+              Recovery codes left: <span className="text-slate-200">{codesRemaining}</span>
+            </span>
+            <button
+              type="button"
+              onClick={regenerate}
+              disabled={busy}
+              className="rounded-md border border-slate-700 px-3 py-1 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+            >
+              Regenerate
+            </button>
+          </div>
           <input
             type="password"
             autoComplete="current-password"

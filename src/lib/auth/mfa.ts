@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { and, eq, gt, sql } from "drizzle-orm";
 import { getDb } from "@/lib/db/client";
 import { mfaChallenges, users } from "@/lib/db/schema";
@@ -7,6 +8,30 @@ import { generateTotpSecret, totpUri, verifyTotp } from "./totp";
 
 export const MFA_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 export const MFA_MAX_ATTEMPTS = 5;
+export const RECOVERY_CODE_COUNT = 8;
+
+// Unambiguous charset: no 0/o, 1/l, i.
+const RECOVERY_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
+
+/** One-shot recovery codes, shown as `xxxx-xxxx`. Only SHA-256 hashes of the
+ * normalized form (lowercase, no separators) ever reach the database. */
+export function generateRecoveryCodes(count = RECOVERY_CODE_COUNT): string[] {
+  return Array.from({ length: count }, () => {
+    const raw = Array.from(randomBytes(8), (b) => RECOVERY_ALPHABET[b % RECOVERY_ALPHABET.length]).join("");
+    return `${raw.slice(0, 4)}-${raw.slice(4)}`;
+  });
+}
+
+function recoveryHash(code: string): string {
+  return sha256Hex(code.toLowerCase().replace(/[\s-]/g, ""));
+}
+
+async function storeRecoveryCodes(userId: string, codes: string[]): Promise<void> {
+  const hashes = codes.map(recoveryHash);
+  await getDb().execute(
+    sql`select totp_codes_set(${userId}::uuid, array(select jsonb_array_elements_text(${JSON.stringify(hashes)}::jsonb)))`,
+  );
+}
 
 /** True when the user has a confirmed TOTP enrollment gating sign-in. */
 export async function mfaEnabled(userId: string): Promise<boolean> {
@@ -26,17 +51,38 @@ export async function beginEnrollment(userId: string, email: string): Promise<En
   return { secret, uri: totpUri(secret, email) };
 }
 
-/** Confirm enrollment with a live TOTP code; enables MFA on success. */
-export async function confirmEnrollment(userId: string, code: string): Promise<boolean> {
+/** Confirm enrollment with a live TOTP code; enables MFA on success and
+ * returns the recovery codes to show once. */
+export async function confirmEnrollment(userId: string, code: string): Promise<string[] | null> {
   const res = await getDb().execute<{ secret: string; enabled: boolean }>(
     sql`select secret, enabled from totp_state(${userId}::uuid)`,
   );
   const row = res.rows[0];
-  if (!row || row.enabled || !verifyTotp(row.secret, code)) return false;
+  if (!row || row.enabled || !verifyTotp(row.secret, code)) return null;
   const out = await getDb().execute<{ totp_enable: boolean }>(
     sql`select totp_enable(${userId}::uuid)`,
   );
-  return out.rows[0]?.totp_enable === true;
+  if (out.rows[0]?.totp_enable !== true) return null;
+  const codes = generateRecoveryCodes();
+  await storeRecoveryCodes(userId, codes);
+  return codes;
+}
+
+/** Remaining unused recovery codes, for the account page. */
+export async function recoveryCodeCount(userId: string): Promise<number> {
+  const res = await getDb().execute<{ totp_codes_count: number }>(
+    sql`select totp_codes_count(${userId}::uuid)`,
+  );
+  return res.rows[0]?.totp_codes_count ?? 0;
+}
+
+/** Rotate the whole recovery-code set. Requires MFA to be enabled; every
+ * previous code stops working immediately. */
+export async function regenerateRecoveryCodes(userId: string): Promise<string[] | null> {
+  if (!(await mfaEnabled(userId))) return null;
+  const codes = generateRecoveryCodes();
+  await storeRecoveryCodes(userId, codes);
+  return codes;
 }
 
 /** Disable MFA; requires the current password, like changing it. */
@@ -80,7 +126,17 @@ export async function consumeMfaChallenge(token: string, code: string): Promise<
     sql`select secret, enabled from totp_state(${challenge.userId}::uuid)`,
   );
   const row = res.rows[0];
-  if (!row || !row.enabled || !verifyTotp(row.secret, code)) {
+  const totpOk = !!row && row.enabled && verifyTotp(row.secret, code);
+  // A valid TOTP wins; otherwise the same field accepts a one-shot recovery
+  // code, consumed atomically so concurrent guesses cannot reuse it.
+  const recoveryOk =
+    !totpOk &&
+    (
+      await db.execute<{ totp_codes_consume: boolean }>(
+        sql`select totp_codes_consume(${challenge.userId}::uuid, ${recoveryHash(code)})`,
+      )
+    ).rows[0]?.totp_codes_consume === true;
+  if (!totpOk && !recoveryOk) {
     const attempts = challenge.attempts + 1;
     if (attempts >= MFA_MAX_ATTEMPTS) {
       await db.delete(mfaChallenges).where(eq(mfaChallenges.id, challenge.id));

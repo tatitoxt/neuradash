@@ -78,6 +78,18 @@ export const userTotp = pgTable("user_totp", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const totpRecoveryCodes = pgTable(
+  "totp_recovery_codes",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    codeHash: text("code_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.codeHash] })],
+);
+
 export const mfaChallenges = pgTable("mfa_challenges", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id")
