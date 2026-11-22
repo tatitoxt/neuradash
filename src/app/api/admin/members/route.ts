@@ -33,9 +33,11 @@ export async function POST(req: Request): Promise<Response> {
     role: body.role as Role,
   });
   if (!result.ok) {
-    return result.reason === "already_member"
-      ? apiError(409, "already_member", "that user already belongs to this tenant")
-      : apiError(422, "invalid_email", "not a valid email address");
+    if (result.reason === "already_member") return apiError(409, "already_member", "that user already belongs to this tenant");
+    if (result.reason === "email_in_use") {
+      return apiError(409, "email_in_use", "that email already has an account; existing accounts cannot be invited into another tenant");
+    }
+    return apiError(422, "invalid_email", "not a valid email address");
   }
   return json(result, 201);
 }
