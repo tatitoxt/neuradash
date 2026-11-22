@@ -40,6 +40,7 @@ WebSocket channel, or through a bug in a single query.
 
 ## Out of scope (for now)
 
-Sign-up / invitations UI, password reset, SSO, multi-tenant switching in the UI,
-horizontal scaling of the WebSocket tier beyond Postgres `LISTEN/NOTIFY`,
-data retention jobs, and rate limiting of the ingest endpoint.
+Self-service sign-up, email-based password reset (there is no mailer), SSO,
+and horizontal scaling of the WebSocket tier beyond Postgres `LISTEN/NOTIFY`.
+Invitations, tenant switching, retention pruning, per-key ingest rate limits,
+threshold alerts and TOTP MFA were added later; see the README for their behavior.
