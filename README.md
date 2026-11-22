@@ -50,6 +50,7 @@ NeuraDash is a small, complete implementation of that story: ingest → persist 
   after commit — POSTs a JSON payload to its `webhookUrl` with a 3 s timeout;
   delivery success is marked on the event, and webhook failures never affect
   ingest.
+- **Self-service password change**: `POST /api/me/password` (session + same-origin) verifies the current password, rotates the hash through a SECURITY DEFINER function (the app role cannot UPDATE `users`), and revokes every other session. UI at `/account`, linked from the email in the header.
 - **Member administration** (admin only): `GET/POST /api/admin/members` lists members and invites by email — an existing account joins the tenant directly, a new one is created with a temporary password shown once (no mailer). `PATCH/DELETE /api/admin/members/{id}` change roles or remove members (sessions in that tenant are killed); admins cannot change or remove themselves.
 - **Admin page**: create (shown once, with optional 30/90/365-day expiry and a per-minute ingest limit) and revoke ingest API keys; invite members, change roles and remove members.
 - **Synthetic data**: deterministic seed (2 tenants, 4 users — `multi@demo.test` belongs to both tenants to demo the switcher — 6,000 events per tenant over 7 days) and a generator that keeps posting events through the public ingest API.
@@ -175,10 +176,10 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 
 ## Limitations
 
-- **Single instance tested.** Fan-out via `LISTEN/NOTIFY` should work with several app instances (each one listens), but only one instance has been run and tested. No load or performance testing has been done.
+- **Multi-instance fan-out verified.** `LISTEN/NOTIFY` delivery across two independent realtime instances is covered by an integration test (each instance listens on its own connection). No soak or load testing has been done beyond the recorded benchmarks.
 - **Aggregates come from `metric_rollups`** (per-tenant, per-minute buckets maintained inside the ingest transaction), so `/api/metrics` costs O(minutes) not O(events). `events` is monthly-partitioned on `received_at` with a DEFAULT catch-all.
 - **Live chart updates are approximate between resyncs**: live events update KPIs and the current bucket client-side; the dashboard re-fetches exact aggregates every 60 s and after a reconnect.
-- **No signup, password reset, MFA or self-service profile.** Invites are the only way in: no mailer exists, so the temporary password is shown once to the inviting admin and must be handed over manually.
+- **No signup, password reset or MFA.** Invites are the only way in: no mailer exists, so the temporary password is shown once to the inviting admin and must be handed over manually. Users can change their own password at `/account` (`POST /api/me/password`), which revokes all other sessions.
 - **`users` and `sessions` are global tables without RLS** (they are needed before a tenant is known); the app role can read `users` and insert new rows for invites, but cannot update or delete them. Membership writes stay tenant-scoped by RLS.
 - **API keys carry `ingest` and/or `read` scopes**: `ingest` writes events; `read`
   authorizes `GET /api/metrics` and `GET /api/events` without a session. Admin/member

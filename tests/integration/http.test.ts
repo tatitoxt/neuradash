@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as loginRoute from "@/app/api/auth/login/route";
 import * as logoutRoute from "@/app/api/auth/logout/route";
 import * as meRoute from "@/app/api/me/route";
+import * as passwordRoute from "@/app/api/me/password/route";
 import * as ingestRoute from "@/app/api/ingest/route";
 import * as eventsRoute from "@/app/api/events/route";
 import * as eventRoute from "@/app/api/events/[id]/route";
@@ -477,5 +478,67 @@ describe("event retention", () => {
     // Null disables retention again.
     await retentionRoute.PUT(request("/api/admin/retention",
       sameOrigin({ method: "PUT", cookie: admin, body: JSON.stringify({ retentionDays: null }) })));
+  });
+});
+
+describe("self-service password change", () => {
+  // Dedicated invitee: the member-administration tests revoke their own
+  // invitee's session, so this block owns its user.
+  let rotatorPassword: string;
+  let rotatorCookie: string;
+
+  it("requires a session and rejects weak/wrong-current attempts", async () => {
+    const unauth = await passwordRoute.POST(
+      request("/api/me/password", sameOrigin({ method: "POST", body: JSON.stringify({ currentPassword: "x", newPassword: "new-password-10" }) })),
+    );
+    expect(unauth.status).toBe(401);
+
+    const invite = await membersRoute.POST(
+      request("/api/admin/members", sameOrigin({ method: "POST", cookie: acmeAdmin, body: JSON.stringify({ email: "rotator@acme.test", name: "Ron Rotator", role: "viewer" }) })),
+    );
+    rotatorPassword = (await invite.json()).temporaryPassword;
+    rotatorCookie = cookieFrom(
+      await loginRoute.POST(request("/api/auth/login", sameOrigin({ method: "POST", body: JSON.stringify({ email: "rotator@acme.test", password: rotatorPassword }) }))),
+    );
+
+    const weak = await passwordRoute.POST(
+      request("/api/me/password", sameOrigin({ method: "POST", cookie: rotatorCookie, body: JSON.stringify({ currentPassword: "x", newPassword: "short" }) })),
+    );
+    expect(weak.status).toBe(400);
+
+    const wrong = await passwordRoute.POST(
+      request("/api/me/password", sameOrigin({ method: "POST", cookie: rotatorCookie, body: JSON.stringify({ currentPassword: "not-the-temp", newPassword: "a-fresh-password-123" }) })),
+    );
+    expect(wrong.status).toBe(401);
+    expect(await wrong.json()).toMatchObject({ error: "invalid_credentials" });
+  });
+
+  it("rotates the password and revokes every other session", async () => {
+    const tempPassword = rotatorPassword;
+    const sessionB = cookieFrom(
+      await loginRoute.POST(request("/api/auth/login", sameOrigin({ method: "POST", body: JSON.stringify({ email: "rotator@acme.test", password: tempPassword }) }))),
+    );
+    const sessionA = cookieFrom(
+      await loginRoute.POST(request("/api/auth/login", sameOrigin({ method: "POST", body: JSON.stringify({ email: "rotator@acme.test", password: tempPassword }) }))),
+    );
+
+    const changed = await passwordRoute.POST(
+      request("/api/me/password", sameOrigin({ method: "POST", cookie: sessionA, body: JSON.stringify({ currentPassword: tempPassword, newPassword: "a-fresh-password-123" }) })),
+    );
+    expect(changed.status).toBe(200);
+
+    // Session A (the one that rotated) stays valid; session B is revoked.
+    expect((await meRoute.GET(request("/api/me", { cookie: sessionA }))).status).toBe(200);
+    expect((await meRoute.GET(request("/api/me", { cookie: sessionB }))).status).toBe(401);
+
+    // The old password no longer works; the new one does.
+    const old = await loginRoute.POST(
+      request("/api/auth/login", sameOrigin({ method: "POST", body: JSON.stringify({ email: "rotator@acme.test", password: tempPassword }) })),
+    );
+    expect(old.status).toBe(401);
+    const fresh = await loginRoute.POST(
+      request("/api/auth/login", sameOrigin({ method: "POST", body: JSON.stringify({ email: "rotator@acme.test", password: "a-fresh-password-123" }) })),
+    );
+    expect(fresh.status).toBe(200);
   });
 });

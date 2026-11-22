@@ -1,7 +1,7 @@
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, eq, gt, ne, sql } from "drizzle-orm";
 import { getDb, withTenant, withUser } from "@/lib/db/client";
 import { memberships, sessions, tenants, users, type Role } from "@/lib/db/schema";
-import { verifyPassword } from "./password";
+import { hashPassword, verifyPassword } from "./password";
 import { generateSessionToken, sha256Hex } from "./tokens";
 
 export const SESSION_COOKIE = "nd_session";
@@ -147,4 +147,35 @@ export function serializeSessionCookie(token: string, maxAgeMs = SESSION_TTL_MS)
 
 export function clearSessionCookie(): string {
   return serializeSessionCookie("", 0);
+}
+
+export type PasswordChangeResult = "ok" | "invalid_current" | "weak_password";
+
+/**
+ * Self-service password rotation. Verifies the current password first, then
+ * updates the hash through the SECURITY DEFINER `change_user_password`
+ * function (the app role cannot UPDATE `users` directly) and kills every
+ * other session of the user so a leaked temp password stops working.
+ */
+export async function changePassword(
+  session: Session,
+  current: string,
+  next: string,
+): Promise<PasswordChangeResult> {
+  if (next.length < 10 || next.length > 256 || next === current) return "weak_password";
+  const [user] = await getDb()
+    .select({ passwordHash: users.passwordHash })
+    .from(users)
+    .where(eq(users.id, session.userId))
+    .limit(1);
+  if (!user || !(await verifyPassword(current, user.passwordHash))) return "invalid_current";
+  const passwordHash = await hashPassword(next);
+  const res = await getDb().execute<{ changed: boolean }>(
+    sql`select change_user_password(${session.userId}::uuid, ${passwordHash}) as changed`,
+  );
+  if (!res.rows[0]?.changed) return "invalid_current";
+  await getDb()
+    .delete(sessions)
+    .where(and(eq(sessions.userId, session.userId), ne(sessions.id, session.sessionId)));
+  return "ok";
 }
