@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPublicAddress, resolvesToPublicAddresses } from "@/lib/net/public-address";
+import { isPublicAddress, publicOnlyLookup, resolvesToPublicAddresses } from "@/lib/net/public-address";
 
 describe("isPublicAddress", () => {
   it("rejects loopback, private, link-local, CGNAT, multicast and mapped private addresses", () => {
@@ -18,5 +18,12 @@ describe("isPublicAddress", () => {
     expect(await resolvesToPublicAddresses("[::1]")).toBe(false);
     expect(await resolvesToPublicAddresses("8.8.8.8")).toBe(true);
     expect(await resolvesToPublicAddresses("localhost")).toBe(false);
+  });
+
+  it("refuses non-public answers at connect time (DNS rebinding)", async () => {
+    const err = await new Promise<NodeJS.ErrnoException | null>((resolve) =>
+      publicOnlyLookup("localhost", {}, (e) => resolve(e)),
+    );
+    expect(err?.code).toBe("ENOTPUBLIC");
   });
 });
