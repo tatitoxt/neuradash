@@ -1,3 +1,4 @@
+import { lookup as dnsLookup, type LookupAddress, type LookupOptions } from "node:dns";
 import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 
@@ -28,4 +29,26 @@ export async function resolvesToPublicAddresses(hostname: string): Promise<boole
   } catch {
     return false;
   }
+}
+
+type LookupCallback = (err: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void;
+
+/**
+ * `lookup` for http(s).request that refuses non-public answers at connect
+ * time. The socket connects to exactly the addresses validated here, so a DNS
+ * answer that changes between a pre-check and the request (rebinding) cannot
+ * reach an internal service.
+ */
+export function publicOnlyLookup(hostname: string, options: LookupOptions, callback: LookupCallback): void {
+  dnsLookup(hostname, { ...options, all: true }, (err, addresses) => {
+    if (err) return callback(err, []);
+    const list = addresses as LookupAddress[];
+    if (list.length === 0 || !list.every((a) => isPublicAddress(a.address))) {
+      const refused: NodeJS.ErrnoException = new Error(`refusing non-public address for ${hostname}`);
+      refused.code = "ENOTPUBLIC";
+      return callback(refused, []);
+    }
+    if (options.all) return callback(null, list);
+    callback(null, list[0]!.address, list[0]!.family);
+  });
 }
