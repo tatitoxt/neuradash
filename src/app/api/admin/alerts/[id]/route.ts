@@ -1,4 +1,4 @@
-import { apiError, json, readJson, requireSession } from "@/lib/http";
+import { apiError, json, readJson, jsonObject, requireSession } from "@/lib/http";
 import {
   ALERT_METRICS,
   ALERT_OPS,
@@ -10,15 +10,18 @@ import {
 
 type Params = { params: Promise<{ id: string }> };
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** PATCH — partial update of a rule (name/metric/op/threshold/webhookUrl/enabled/cooldownMinutes). */
 export async function PATCH(req: Request, { params }: Params): Promise<Response> {
   const auth = await requireSession(req, { role: "admin", mutation: true });
   if (!auth.ok) return auth.response;
   const { id } = await params;
+  if (!UUID.test(id)) return apiError(404, "not_found", "alert rule not found");
 
   const parsed = await readJson(req, 8 * 1024);
   if (!parsed.ok) return parsed.response;
-  const body = parsed.body as Record<string, unknown>;
+  const body = jsonObject(parsed.body);
   const patch: Parameters<typeof updateAlertRule>[2] = {};
   if (body.name !== undefined) {
     if (typeof body.name !== "string" || body.name.trim().length === 0 || body.name.length > 120)
@@ -62,7 +65,9 @@ export async function PATCH(req: Request, { params }: Params): Promise<Response>
       return apiError(422, "invalid_body", "cooldownMinutes must be an int 0-10080");
     patch.cooldownMinutes = c;
   }
+  if (Object.keys(patch).length === 0) return apiError(422, "invalid_body", "no supported fields to update");
   const rule = await updateAlertRule(auth.session.tenantId, id, patch);
+  if (rule === "duplicate") return apiError(409, "duplicate", "an alert rule with that name already exists");
   if (!rule) return apiError(404, "not_found", "alert rule not found");
   return json({ rule });
 }
@@ -71,6 +76,7 @@ export async function DELETE(req: Request, { params }: Params): Promise<Response
   const auth = await requireSession(req, { role: "admin", mutation: true });
   if (!auth.ok) return auth.response;
   const { id } = await params;
+  if (!UUID.test(id)) return apiError(404, "not_found", "alert rule not found");
   const removed = await deleteAlertRule(auth.session.tenantId, id);
   if (!removed) return apiError(404, "not_found", "alert rule not found");
   return json({ deleted: true });

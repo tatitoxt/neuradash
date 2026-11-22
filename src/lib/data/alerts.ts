@@ -2,7 +2,10 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { alertEvents, alertRules } from "@/lib/db/schema";
 import type { Tx } from "@/lib/db/client";
 import { getDb, withTenant } from "@/lib/db/client";
-import { resolvesToPublicAddresses } from "@/lib/net/public-address";
+import http from "node:http";
+import https from "node:https";
+import { isIP } from "node:net";
+import { publicOnlyLookup, resolvesToPublicAddresses } from "@/lib/net/public-address";
 
 export const ALERT_METRICS = ["events", "errors", "revenue", "error_rate"] as const;
 export const ALERT_OPS = [">", ">=", "<", "<="] as const;
@@ -82,7 +85,9 @@ export async function evaluateAlertRules(
   const rules = await tx
     .select()
     .from(alertRules)
-    .where(and(eq(alertRules.tenantId, tenantId), eq(alertRules.enabled, true)));
+    .where(and(eq(alertRules.tenantId, tenantId), eq(alertRules.enabled, true)))
+    // Blocks a concurrent rule DELETE until ingest commits, so the alert_events FK cannot fail mid-ingest.
+    .for("key share");
   const active = rules.filter(
     (r) =>
       r.lastFiredAt == null ||
@@ -90,6 +95,7 @@ export async function evaluateAlertRules(
   );
   if (active.length === 0) return;
 
+  const firedNow = new Set<string>();
   for (const bucket of buckets) {
     const rows = await tx.execute<{ events: string; errors: string; revenue: number | string }>(sql`
       select events, errors, revenue from metric_rollups
@@ -98,6 +104,8 @@ export async function evaluateAlertRules(
     if (!row) continue;
     const rollup = { events: Number(row.events), errors: Number(row.errors), revenue: Number(row.revenue) };
     for (const rule of active) {
+      // A batch spanning several minutes fires a rule with a cooldown at most once.
+      if (firedNow.has(rule.id) && rule.cooldownMinutes > 0) continue;
       const metric = rule.metric as AlertMetric;
       const observed = observedValue(metric, rollup);
       if (!compare(rule.op as AlertOp, observed, rule.threshold)) continue;
@@ -107,11 +115,13 @@ export async function evaluateAlertRules(
           tenantId,
           ruleId: rule.id,
           metric,
+          op: rule.op,
           observed,
           threshold: rule.threshold,
         })
         .returning({ id: alertEvents.id });
       if (!evt) continue;
+      firedNow.add(rule.id);
       await tx
         .update(alertRules)
         .set({ lastFiredAt: new Date() })
@@ -153,28 +163,47 @@ async function postAlertWebhook(alert: {
   try {
     const url = new URL(alert.webhookUrl);
     if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-    // Tenant admins choose webhook URLs, so by default refuse internal destinations (SSRF).
-    if (process.env.ALERT_WEBHOOK_ALLOW_PRIVATE !== "true" && !(await resolvesToPublicAddresses(url.hostname))) {
+    // Tenant admins choose webhook URLs, so by default refuse internal destinations (SSRF):
+    // IP literals are checked up front, hostnames at connect time via publicOnlyLookup.
+    const allowPrivate = process.env.ALERT_WEBHOOK_ALLOW_PRIVATE === "true";
+    if (!allowPrivate && isIP(url.hostname.replace(/^\[|\]$/g, "")) && !(await resolvesToPublicAddresses(url.hostname))) {
       return false;
     }
-    const res = await fetch(alert.webhookUrl, {
-      method: "POST",
-      redirect: "manual",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        type: "neuradash.alert",
-        rule: alert.name,
-        metric: alert.metric,
-        op: alert.op,
-        threshold: alert.threshold,
-        observed: alert.observed,
-      }),
-      signal: AbortSignal.timeout(3_000),
+    const body = JSON.stringify({
+      type: "neuradash.alert",
+      rule: alert.name,
+      metric: alert.metric,
+      op: alert.op,
+      threshold: alert.threshold,
+      observed: alert.observed,
     });
-    return res.ok;
+    const status = await postJson(url, body, allowPrivate);
+    // Redirects are not followed (they could point anywhere); only 2xx counts.
+    return status >= 200 && status < 300;
   } catch {
     return false;
   }
+}
+
+function postJson(url: URL, body: string, allowPrivate: boolean): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = (url.protocol === "https:" ? https : http).request(
+      url,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) },
+        timeout: 3_000,
+        ...(allowPrivate ? {} : { lookup: publicOnlyLookup }),
+      },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      },
+    );
+    req.on("timeout", () => req.destroy(new Error("webhook timed out")));
+    req.on("error", reject);
+    req.end(body);
+  });
 }
 
 /** First delivery attempt right after a rule fires; schedules a retry on failure. */
@@ -212,7 +241,7 @@ export async function sweepAlertRetries(limitPerTenant = 10): Promise<number> {
         id: string; attempts: number; name: string; metric: string; op: string;
         threshold: number; observed: number; webhook_url: string;
       }>(sql`
-        select e.id, e.attempts, r.name, r."op", r.webhook_url, e.metric, e.observed, e.threshold
+        select e.id, e.attempts, r.name, coalesce(e."op", r."op") as op, r.webhook_url, e.metric, e.observed, e.threshold
         from alert_events e join alert_rules r on r.id = e.rule_id
         where not e.delivered and e.next_attempt_at is not null
           and e.next_attempt_at <= now() and r.enabled
@@ -246,6 +275,11 @@ export async function sweepAlertRetries(limitPerTenant = 10): Promise<number> {
     });
   }
   return retried;
+}
+
+function isUniqueViolation(e: unknown): boolean {
+  const err = e as { code?: string; cause?: { code?: string } };
+  return err.code === "23505" || err.cause?.code === "23505";
 }
 
 export async function listAlertRules(tenantId: string): Promise<AlertRuleDTO[]> {
@@ -284,8 +318,7 @@ export async function createAlertRule(
     if (!row) throw new Error("insert returned no row");
     return { ok: true, rule: toRuleDTO(row) };
   } catch (e) {
-    const err = e as { code?: string; cause?: { code?: string } };
-    if (err.code === "23505" || err.cause?.code === "23505") return { ok: false, reason: "duplicate" };
+    if (isUniqueViolation(e)) return { ok: false, reason: "duplicate" };
     throw e;
   }
 }
@@ -302,7 +335,7 @@ export async function updateAlertRule(
     enabled: boolean;
     cooldownMinutes: number;
   }>,
-): Promise<AlertRuleDTO | null> {
+): Promise<AlertRuleDTO | null | "duplicate"> {
   const sets: Partial<typeof alertRules.$inferInsert> = {};
   if (patch.name !== undefined) sets.name = patch.name;
   if (patch.metric !== undefined) sets.metric = patch.metric;
@@ -311,14 +344,20 @@ export async function updateAlertRule(
   if (patch.webhookUrl !== undefined) sets.webhookUrl = patch.webhookUrl;
   if (patch.enabled !== undefined) sets.enabled = patch.enabled;
   if (patch.cooldownMinutes !== undefined) sets.cooldownMinutes = patch.cooldownMinutes;
-  const [row] = await withTenant(tenantId, (tx) =>
-    tx
-      .update(alertRules)
-      .set(sets)
-      .where(and(eq(alertRules.id, id), eq(alertRules.tenantId, tenantId)))
-      .returning(),
-  );
-  return row ? toRuleDTO(row) : null;
+  if (Object.keys(sets).length === 0) return null;
+  try {
+    const [row] = await withTenant(tenantId, (tx) =>
+      tx
+        .update(alertRules)
+        .set(sets)
+        .where(and(eq(alertRules.id, id), eq(alertRules.tenantId, tenantId)))
+        .returning(),
+    );
+    return row ? toRuleDTO(row) : null;
+  } catch (e) {
+    if (isUniqueViolation(e)) return "duplicate";
+    throw e;
+  }
 }
 
 export async function deleteAlertRule(tenantId: string, id: string): Promise<boolean> {

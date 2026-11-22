@@ -5,6 +5,11 @@ import * as alertsRoute from "@/app/api/admin/alerts/route";
 import * as alertByIdRoute from "@/app/api/admin/alerts/[id]/route";
 import * as ingestRoute from "@/app/api/ingest/route";
 import * as loginRoute from "@/app/api/auth/login/route";
+import * as membersRoute from "@/app/api/admin/members/route";
+import * as memberRoute from "@/app/api/admin/members/[id]/route";
+import { eq } from "drizzle-orm";
+import { getDb } from "@/lib/db/client";
+import { users } from "@/lib/db/schema";
 import { deliverAlert, listAlertEvents, sweepAlertRetries, type FiredAlert } from "@/lib/data/alerts";
 import { appClient, cookieFrom, request, reseed, sameOrigin } from "./helpers";
 
@@ -185,6 +190,53 @@ afterAll(async () => {
   const client = appClient();
   await client.connect();
   await client.end();
+});
+
+describe("admin route validation", () => {
+  const patchRule = (id: string, body: string) =>
+    alertByIdRoute.PATCH(request(`/api/admin/alerts/${id}`, sameOrigin({ method: "PATCH", cookie, body })), {
+      params: Promise.resolve({ id }),
+    });
+
+  it("returns 4xx, not 500, for malformed ids, empty or null patches and duplicate renames", async () => {
+    const del = await alertByIdRoute.DELETE(request("/api/admin/alerts/nope", sameOrigin({ method: "DELETE", cookie })), {
+      params: Promise.resolve({ id: "nope" }),
+    });
+    expect(del.status).toBe(404);
+    expect((await patchRule("nope", JSON.stringify({ enabled: false }))).status).toBe(404);
+
+    const a = await (await createRule({ name: "rename-a", metric: "events", op: ">", threshold: 1e9, webhookUrl: "http://127.0.0.1:1/a" })).json();
+    await createRule({ name: "rename-b", metric: "events", op: ">", threshold: 1e9, webhookUrl: "http://127.0.0.1:1/b" });
+    expect((await patchRule(a.rule.id, "{}")).status).toBe(422);
+    expect((await patchRule(a.rule.id, "null")).status).toBe(422);
+    expect((await patchRule(a.rule.id, JSON.stringify({ name: "rename-b" }))).status).toBe(409);
+  });
+
+  it("rejects null member payloads and uppercase self ids", async () => {
+    const invite = await membersRoute.POST(request("/api/admin/members", sameOrigin({ method: "POST", cookie, body: "null" })));
+    expect(invite.status).toBe(422);
+    const [me] = await getDb().select({ id: users.id }).from(users).where(eq(users.email, "admin@acme.test"));
+    const upper = me!.id.toUpperCase();
+    const demote = await memberRoute.PATCH(
+      request(`/api/admin/members/${upper}`, sameOrigin({ method: "PATCH", cookie, body: JSON.stringify({ role: "viewer" }) })),
+      { params: Promise.resolve({ id: upper }) },
+    );
+    expect(demote.status).toBe(422);
+    const remove = await memberRoute.DELETE(request(`/api/admin/members/${upper}`, sameOrigin({ method: "DELETE", cookie })), {
+      params: Promise.resolve({ id: upper }),
+    });
+    expect(remove.status).toBe(422);
+  });
+
+  it("fires a rule with a cooldown once per batch even when the batch spans several minutes", async () => {
+    const res = await createRule({ name: "multi-minute", metric: "events", op: ">=", threshold: 1, webhookUrl: "http://127.0.0.1:1/m", cooldownMinutes: 15 });
+    const { rule } = await res.json();
+    const now = Date.now();
+    const events = [0, 1, 2].map((m) => ({ type: "signup", occurredAt: new Date(now - m * 60_000 - 1_000).toISOString() }));
+    expect((await ingest({ events })).status).toBe(202);
+    const fired = (await listAlertEvents(acmeTenantId)).filter((e) => e.ruleId === rule.id);
+    expect(fired).toHaveLength(1);
+  });
 });
 
 describe("webhook destination guard", () => {

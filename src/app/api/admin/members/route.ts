@@ -1,4 +1,4 @@
-import { apiError, json, readJson, requireSession } from "@/lib/http";
+import { apiError, json, readJson, jsonObject, requireSession } from "@/lib/http";
 import { inviteMember, listMembers } from "@/lib/data/members";
 import type { Role } from "@/lib/db/schema";
 
@@ -17,7 +17,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const parsed = await readJson(req, 8 * 1024);
   if (!parsed.ok) return parsed.response;
-  const body = parsed.body as { email?: unknown; name?: unknown; role?: unknown };
+  const body = jsonObject(parsed.body);
   if (
     typeof body.email !== "string" ||
     (body.name !== undefined && typeof body.name !== "string") ||
