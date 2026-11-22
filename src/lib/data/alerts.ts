@@ -185,6 +185,8 @@ async function postAlertWebhook(alert: {
   }
 }
 
+const WEBHOOK_TIMEOUT_MS = 3_000;
+
 function postJson(url: URL, body: string, allowPrivate: boolean): Promise<number> {
   return new Promise((resolve, reject) => {
     const req = (url.protocol === "https:" ? https : http).request(
@@ -192,16 +194,20 @@ function postJson(url: URL, body: string, allowPrivate: boolean): Promise<number
       {
         method: "POST",
         headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) },
-        timeout: 3_000,
         ...(allowPrivate ? {} : { lookup: publicOnlyLookup }),
       },
       (res) => {
+        clearTimeout(deadline);
         res.resume();
         resolve(res.statusCode ?? 0);
       },
     );
-    req.on("timeout", () => req.destroy(new Error("webhook timed out")));
-    req.on("error", reject);
+    // Hard deadline (not an idle timeout), so a slow-dripping endpoint cannot hold the retry transaction open.
+    const deadline = setTimeout(() => req.destroy(new Error("webhook timed out")), WEBHOOK_TIMEOUT_MS);
+    req.on("error", (err) => {
+      clearTimeout(deadline);
+      reject(err);
+    });
     req.end(body);
   });
 }
