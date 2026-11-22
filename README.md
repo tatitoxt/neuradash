@@ -74,6 +74,7 @@ Open http://localhost:3000 and sign in with one of the demo accounts (password `
 | `admin@acme.test`   | Acme Robotics | admin  |
 | `viewer@acme.test`  | Acme Robotics | viewer |
 | `admin@globex.test` | Globex Labs   | admin  |
+| `multi@demo.test`   | Acme Robotics / Globex Labs | admin / viewer (tenant switcher demo) |
 
 The `generator` service posts about one synthetic event per second per tenant, so the feed moves on its own. To push your own event and watch it appear on the Acme dashboard:
 
