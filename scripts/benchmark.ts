@@ -20,7 +20,7 @@ import { insertEvents } from "@/lib/data/events";
 import { getMetrics } from "@/lib/data/metrics";
 import { closeDb } from "@/lib/db/client";
 import type { IngestEvent } from "@/lib/ingest/schema";
-import type { RangeKey } from "@/lib/range";
+import { RANGES, type RangeKey } from "@/lib/range";
 
 const arg = (name: string, fallback: string) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -81,13 +81,18 @@ async function main() {
       await getMetrics(tenantId, range);
       samples.push(performance.now() - t0);
       t0 = performance.now();
-      // The pre-rollup query shape: aggregate raw events per bucket.
+      // The pre-rollup query shape: aggregate raw events over the same range and buckets.
+      const { ms: rangeMs, bucketMs } = RANGES[range];
+      const until = new Date();
       await db.execute(sql`
-        select date_bin('1 minute', occurred_at, timestamptz 'epoch') as bucket,
+        select date_bin(${`${bucketMs / 1000} seconds`}::interval, occurred_at, timestamptz 'epoch') as bucket,
                count(*) as events,
                count(*) filter (where type = 'error') as errors,
-               coalesce(sum(value) filter (where type = 'purchase'), 0) as revenue
-        from events where tenant_id = ${tenantId} group by 1`);
+               coalesce(sum(value) filter (where type = 'purchase'), 0) as revenue,
+               array_agg(distinct source) as sources
+        from events
+        where tenant_id = ${tenantId} and occurred_at >= ${new Date(until.getTime() - rangeMs)} and occurred_at <= ${until}
+        group by 1`);
       rawSamples.push(performance.now() - t0);
     }
     rollups[range] = +median(samples).toFixed(1);
