@@ -24,7 +24,13 @@ export function MembersPanel({ initialMembers, selfId }: { initialMembers: Membe
     });
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as { error?: string } | null;
-      return setError(body?.error === "already_member" ? "That user already belongs to this tenant" : "Could not invite member");
+      return setError(
+        body?.error === "already_member"
+          ? "That user already belongs to this tenant"
+          : body?.error === "email_in_use"
+            ? "That email already has an account and cannot be invited into another tenant"
+            : "Could not invite member",
+      );
     }
     const body = (await res.json()) as { member: MemberDTO; temporaryPassword: string | null };
     setMembers((m) => [...m, body.member].sort((a, b) => a.email.localeCompare(b.email)));

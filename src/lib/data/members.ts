@@ -33,12 +33,12 @@ export async function listMemberships(userId: string): Promise<TenantMembership[
 
 export type InviteResult =
   | { ok: true; member: MemberDTO; temporaryPassword: string | null }
-  | { ok: false; reason: "already_member" | "invalid" };
+  | { ok: false; reason: "already_member" | "email_in_use" | "invalid" };
 
 /**
- * Adds email to the tenant. An existing user account joins directly; a new one is
- * created with a random temporary password that is returned once (invite flow has
- * no mailer — the admin hands it over). Role is validated by the enum.
+ * Creates an account for email in the tenant with a random temporary password that is
+ * returned once (invite flow has no mailer — the admin hands it over). Emails that
+ * already have an account are refused. Role is validated by the enum.
  */
 export async function inviteMember(
   tenantId: string,
@@ -50,35 +50,28 @@ export async function inviteMember(
 
   // memberships is tenant-scoped under RLS: run inside the tenant context.
   return withTenant(tenantId, async (tx) => {
-    let [existing] = await tx.select().from(users).where(eq(users.email, email)).limit(1);
-    let temporaryPassword: string | null = null;
-    if (!existing) {
-      temporaryPassword = generateSessionToken().slice(0, 16);
-      const passwordHash = await hashPassword(temporaryPassword);
-      // Another tenant may create the same account concurrently; then join that account instead.
-      const [created] = await tx
-        .insert(users)
-        .values({ email, name, passwordHash })
-        .onConflictDoNothing({ target: users.email })
-        .returning();
-      if (created) {
-        await tx.insert(memberships).values({ tenantId, userId: created.id, role: input.role });
-        return { ok: true as const, member: { userId: created.id, email, name, role: input.role }, temporaryPassword };
-      }
-      temporaryPassword = null;
-      [existing] = await tx.select().from(users).where(eq(users.email, email)).limit(1);
-      if (!existing) throw new Error("user vanished after email conflict");
-    }
-    {
+    const [existing] = await tx.select().from(users).where(eq(users.email, email)).limit(1);
+    if (existing) {
       const [already] = await tx
         .select({ userId: memberships.userId })
         .from(memberships)
         .where(and(eq(memberships.tenantId, tenantId), eq(memberships.userId, existing.id)))
         .limit(1);
-      if (already) return { ok: false as const, reason: "already_member" as const };
-      await tx.insert(memberships).values({ tenantId, userId: existing.id, role: input.role });
-      return { ok: true as const, member: { userId: existing.id, email, name: existing.name, role: input.role }, temporaryPassword };
+      // Without email verification we cannot tell who controls an existing account (another
+      // tenant's admin may have created it and kept its temporary password), so never attach it.
+      return { ok: false as const, reason: already ? ("already_member" as const) : ("email_in_use" as const) };
     }
+    const temporaryPassword = generateSessionToken().slice(0, 16);
+    const passwordHash = await hashPassword(temporaryPassword);
+    const [created] = await tx
+      .insert(users)
+      .values({ email, name, passwordHash })
+      .onConflictDoNothing({ target: users.email })
+      .returning();
+    // Lost a race with a concurrent invite of the same email elsewhere.
+    if (!created) return { ok: false as const, reason: "email_in_use" as const };
+    await tx.insert(memberships).values({ tenantId, userId: created.id, role: input.role });
+    return { ok: true as const, member: { userId: created.id, email, name, role: input.role }, temporaryPassword };
   });
 }
 

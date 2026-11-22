@@ -360,6 +360,35 @@ describe("member administration", () => {
     expect(bad.status).toBe(422);
   });
 
+  it("refuses to attach an account another tenant's admin created (cross-tenant takeover)", async () => {
+    const created = await membersRoute.POST(
+      request("/api/admin/members", sameOrigin({ method: "POST", cookie: acmeAdmin, body: JSON.stringify({ email: "victim@shared.test", role: "viewer" }) })),
+    );
+    expect(created.status).toBe(201);
+    const { temporaryPassword } = await created.json();
+
+    const globexAdmin = cookieFrom(
+      await loginRoute.POST(
+        request("/api/auth/login", sameOrigin({ method: "POST", body: JSON.stringify({ email: "admin@globex.test", password: "neuradash-demo" }) })),
+      ),
+    );
+    const invite = await membersRoute.POST(
+      request("/api/admin/members", sameOrigin({ method: "POST", cookie: globexAdmin, body: JSON.stringify({ email: "victim@shared.test", role: "admin" }) })),
+    );
+    expect(invite.status).toBe(409);
+    expect((await invite.json()).error).toBe("email_in_use");
+
+    // The Acme admin's copy of the temporary password still only reaches Acme.
+    const login = await loginRoute.POST(
+      request("/api/auth/login", sameOrigin({ method: "POST", body: JSON.stringify({ email: "victim@shared.test", password: temporaryPassword }) })),
+    );
+    const victim = cookieFrom(login);
+    const sw = await switchRoute.POST(
+      request("/api/auth/switch-tenant", sameOrigin({ method: "POST", cookie: victim, body: JSON.stringify({ tenant: "globex" }) })),
+    );
+    expect(sw.status).toBe(403);
+  });
+
   it("promotes a member and the new role applies immediately", async () => {
     const list = await membersRoute.GET(request("/api/admin/members", { cookie: acmeAdmin }));
     const members = (await list.json()).members as { userId: string; email: string }[];
