@@ -3,7 +3,7 @@ import { getDb, withTenant } from "@/lib/db/client";
 import { apiKeys } from "@/lib/db/schema";
 import { apiKeyDisplayPrefix, API_KEY_PREFIX, generateApiKey, sha256Hex } from "@/lib/auth/tokens";
 
-export const API_KEY_SCOPES = ["ingest"] as const;
+export const API_KEY_SCOPES = ["ingest", "read"] as const;
 export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
 
 export type ApiKeyDTO = {

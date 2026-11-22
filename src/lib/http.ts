@@ -65,6 +65,27 @@ export async function requireSession(
   return { ok: true, session };
 }
 
+/** Accepts a session cookie or an API key (Bearer / x-api-key) carrying the `read` scope. */
+export async function requireReadAccess(
+  req: Request,
+): Promise<{ ok: true; tenantId: string } | { ok: false; response: Response }> {
+  const auth = req.headers.get("authorization");
+  const bearer = auth?.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : null;
+  const key = bearer ?? req.headers.get("x-api-key");
+  if (key) {
+    const { resolveApiKey } = await import("@/lib/data/api-keys");
+    const resolved = await resolveApiKey(key);
+    if (!resolved) return { ok: false, response: apiError(401, "invalid_api_key") };
+    if (!resolved.scopes.includes("read")) {
+      return { ok: false, response: apiError(403, "insufficient_scope", "this API key cannot read metrics") };
+    }
+    return { ok: true, tenantId: resolved.tenantId };
+  }
+  const session = await requireSession(req);
+  if (!session.ok) return session;
+  return { ok: true, tenantId: session.session.tenantId };
+}
+
 export async function readJson(req: Request, maxBytes: number): Promise<{ ok: true; body: unknown } | { ok: false; response: Response }> {
   const length = Number(req.headers.get("content-length") ?? 0);
   if (length > maxBytes) return { ok: false, response: apiError(413, "payload_too_large") };

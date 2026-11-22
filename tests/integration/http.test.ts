@@ -162,6 +162,34 @@ describe("ingest", () => {
   });
 });
 
+describe("read scope", () => {
+  it("lets a read-scoped key fetch metrics and events without a session", async () => {
+    const tenantId = seeded.acme!.tenantId;
+    const reader = await createApiKey(tenantId, "reader", { scopes: ["read"] });
+    const h = { headers: { authorization: `Bearer ${reader.key}` } };
+
+    const metrics = await metricsRoute.GET(request("/api/metrics?range=1h", h));
+    expect(metrics.status).toBe(200);
+
+    const events = await eventsRoute.GET(request("/api/events?limit=5", h));
+    expect(events.status).toBe(200);
+  });
+
+  it("rejects keys without the read scope and unauthenticated requests", async () => {
+    const tenantId = seeded.acme!.tenantId;
+    const ingestOnly = await createApiKey(tenantId, "ingest-only", { scopes: ["ingest"] });
+    const res = await metricsRoute.GET(
+      request("/api/metrics", { headers: { authorization: `Bearer ${ingestOnly.key}` } }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: "insufficient_scope" });
+
+    expect((await metricsRoute.GET(request("/api/metrics", {}))).status).toBe(401);
+    expect((await metricsRoute.GET(request("/api/metrics",
+      { headers: { authorization: "Bearer nd_deadbeefdeadbeef" } }))).status).toBe(401);
+  });
+});
+
 describe("event listing", () => {
   it("accepts fractional limits", async () => {
     const res = await eventsRoute.GET(request("/api/events?limit=2.5", { cookie: acmeAdmin }));
