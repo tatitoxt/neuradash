@@ -5,7 +5,7 @@ import * as alertsRoute from "@/app/api/admin/alerts/route";
 import * as alertByIdRoute from "@/app/api/admin/alerts/[id]/route";
 import * as ingestRoute from "@/app/api/ingest/route";
 import * as loginRoute from "@/app/api/auth/login/route";
-import { deliverAlert, listAlertEvents, type FiredAlert } from "@/lib/data/alerts";
+import { deliverAlert, listAlertEvents, sweepAlertRetries, type FiredAlert } from "@/lib/data/alerts";
 import { appClient, cookieFrom, request, reseed, sameOrigin } from "./helpers";
 
 let cookie: string;
@@ -185,4 +185,93 @@ afterAll(async () => {
   const client = appClient();
   await client.connect();
   await client.end();
+});
+
+describe("alert delivery retries", () => {
+  it("retries a failed delivery on sweep and marks it delivered", async () => {
+    // Webhook that fails the first request then accepts.
+    let calls = 0;
+    const flaky = http.createServer((_req, res) => {
+      calls += 1;
+      res.writeHead(calls < 2 ? 500 : 200).end();
+    });
+    await new Promise<void>((r) => flaky.listen(0, "127.0.0.1", r));
+    const port = (flaky.address() as AddressInfo).port;
+    try {
+      const res = await createRule({
+        name: "flaky-hook", metric: "events", op: ">=", threshold: 1,
+        webhookUrl: `http://127.0.0.1:${port}/hook`, cooldownMinutes: 0,
+      });
+      const { rule } = await res.json();
+      await ingest({ events: [{ type: "signup" }] });
+      // The ingest route's fire-and-forget delivery consumes the 500; wait for it
+      // to record attempt 1 with a scheduled retry.
+      let evt;
+      for (let i = 0; i < 40; i++) {
+        [evt] = await listAlertEvents(acmeTenantId, 1);
+        if (evt && evt.ruleId === rule.id && evt.attempts >= 1) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(evt?.attempts).toBe(1);
+      expect(evt?.delivered).toBe(false);
+      expect(evt?.nextAttemptAt).toBeTruthy();
+
+      // Make the retry due and sweep: flaky now returns 200.
+      const client = appClient();
+      await client.connect();
+      try {
+        await client.query("begin");
+        await client.query("select set_config('app.tenant_id', $1, true)", [acmeTenantId]);
+        await client.query(
+          "update alert_events set next_attempt_at = now() - interval '1 second' where id = $1",
+          [evt!.id],
+        );
+        await client.query("commit");
+      } finally {
+        await client.end();
+      }
+      expect(await sweepAlertRetries()).toBeGreaterThanOrEqual(1);
+      const [after] = await listAlertEvents(acmeTenantId, 1);
+      expect(after!).toMatchObject({ id: evt!.id, delivered: true, attempts: 2 });
+      expect(after.nextAttemptAt).toBeNull();
+      expect(calls).toBe(2);
+    } finally {
+      await new Promise((r) => flaky.close(r));
+    }
+  });
+
+  it("dead-letters an event after the attempt cap", async () => {
+    const res = await createRule({
+      name: "always-dead", metric: "events", op: ">=", threshold: 1,
+      webhookUrl: "http://127.0.0.1:1/hook", cooldownMinutes: 0,
+    });
+    const { rule } = await res.json();
+    await ingest({ events: [{ type: "signup" }] });
+    let evt;
+    for (let i = 0; i < 40; i++) {
+      const events = await listAlertEvents(acmeTenantId, 10);
+      evt = events.find((e) => e.ruleId === rule.id);
+      if (evt && evt.attempts >= 1) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    const client = appClient();
+    await client.connect();
+    try {
+      await client.query("begin");
+      await client.query("select set_config('app.tenant_id', $1, true)", [acmeTenantId]);
+      await client.query(
+        "update alert_events set attempts = 4, next_attempt_at = now() - interval '1 second' where id = $1",
+        [evt!.id],
+      );
+      await client.query("commit");
+    } finally {
+      await client.end();
+    }
+    await sweepAlertRetries();
+    const events = await listAlertEvents(acmeTenantId, 10);
+    const after = events.find((e) => e.id === evt!.id)!;
+    expect(after.attempts).toBe(5);
+    expect(after.delivered).toBe(false);
+    expect(after.nextAttemptAt).toBeNull();
+  });
 });

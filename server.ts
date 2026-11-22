@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import next from "next";
 import { closeDb } from "@/lib/db/client";
+import { sweepAlertRetries } from "@/lib/data/alerts";
 import { createRealtime } from "@/server/realtime";
 
 const dev = process.env.NODE_ENV !== "production";
@@ -29,7 +30,15 @@ async function main() {
     console.log(`> NeuraDash ready on http://localhost:${port} (${dev ? "dev" : "production"})`);
   });
 
+  // Background alert retry sweeper: claims due alert_events across tenants with
+  // FOR UPDATE SKIP LOCKED, so several instances can run it concurrently.
+  const sweep = () => sweepAlertRetries().catch((err) => console.error(`[alerts] sweep failed: ${err}`));
+  const sweepTimer = setInterval(sweep, 15_000);
+  sweepTimer.unref();
+  void sweep();
+
   const shutdown = async () => {
+    clearInterval(sweepTimer);
     server.close();
     await realtime.close();
     await closeDb();
