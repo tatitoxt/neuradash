@@ -187,6 +187,39 @@ afterAll(async () => {
   await client.end();
 });
 
+describe("webhook destination guard", () => {
+  it("refuses private destinations unless ALERT_WEBHOOK_ALLOW_PRIVATE=true", async () => {
+    let calls = 0;
+    const sink = http.createServer((_req, res) => {
+      calls += 1;
+      res.writeHead(200).end();
+    });
+    await new Promise<void>((r) => sink.listen(0, "127.0.0.1", r));
+    const port = (sink.address() as AddressInfo).port;
+    const previous = process.env.ALERT_WEBHOOK_ALLOW_PRIVATE;
+    try {
+      const res = await createRule({
+        name: "internal-hook", metric: "events", op: ">=", threshold: 1,
+        webhookUrl: "http://127.0.0.1:1/hook", cooldownMinutes: 0,
+      });
+      const { rule } = await res.json();
+      process.env.ALERT_WEBHOOK_ALLOW_PRIVATE = "false";
+      await ingest({ events: [{ type: "signup" }] });
+      const evt = (await listAlertEvents(acmeTenantId)).find((e) => e.ruleId === rule.id);
+      await deliverAlert(acmeTenantId, {
+        ruleId: rule.id, alertEventId: evt!.id, name: rule.name, metric: "events",
+        op: ">=", threshold: 1, observed: 1, webhookUrl: `http://127.0.0.1:${port}/hook`,
+      });
+      expect(calls).toBe(0);
+      const after = (await listAlertEvents(acmeTenantId)).find((e) => e.id === evt!.id);
+      expect(after!.delivered).toBe(false);
+    } finally {
+      process.env.ALERT_WEBHOOK_ALLOW_PRIVATE = previous;
+      await new Promise((r) => sink.close(r));
+    }
+  });
+});
+
 describe("alert delivery retries", () => {
   it("retries a failed delivery on sweep and marks it delivered", async () => {
     // Webhook that fails the first request then accepts.

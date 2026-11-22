@@ -2,6 +2,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { alertEvents, alertRules } from "@/lib/db/schema";
 import type { Tx } from "@/lib/db/client";
 import { getDb, withTenant } from "@/lib/db/client";
+import { resolvesToPublicAddresses } from "@/lib/net/public-address";
 
 export const ALERT_METRICS = ["events", "errors", "revenue", "error_rate"] as const;
 export const ALERT_OPS = [">", ">=", "<", "<="] as const;
@@ -152,8 +153,13 @@ async function postAlertWebhook(alert: {
   try {
     const url = new URL(alert.webhookUrl);
     if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    // Tenant admins choose webhook URLs, so by default refuse internal destinations (SSRF).
+    if (process.env.ALERT_WEBHOOK_ALLOW_PRIVATE !== "true" && !(await resolvesToPublicAddresses(url.hostname))) {
+      return false;
+    }
     const res = await fetch(alert.webhookUrl, {
       method: "POST",
+      redirect: "manual",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         type: "neuradash.alert",
