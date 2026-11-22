@@ -57,11 +57,12 @@ describe("events table partitioning", () => {
 
   it("create_event_partitions is idempotent and extends the pre-created range", async () => {
     await owner.query("select create_event_partitions(30)");
-    const { rows: [{ month }] } = await owner.query<{ month: string }>(
+    const { rows: monthRows } = await owner.query<{ month: string }>(
       "select to_char(date_trunc('month', now()) + interval '30 months', 'YYYY_MM') as month"
     );
+    const month = monthRows[0]!.month;
     const { rows } = await owner.query("select to_regclass($1) as part", [`public.events_${month}`]);
-    expect(rows[0].part).toBe(`events_${month}`);
+    expect(rows[0]!.part).toBe(`events_${month}`);
     const again = await owner.query("select create_event_partitions(30) as created");
     expect(again.rows[0].created).toBe(0);
   });

@@ -151,7 +151,7 @@ describe("alert delivery", () => {
     const [evt] = await listAlertEvents(acmeTenantId, 1);
     const fired: FiredAlert = {
       ruleId: rule.id,
-      alertEventId: evt.id,
+      alertEventId: evt!.id,
       name: rule.name,
       metric: "events",
       op: ">=",
@@ -164,7 +164,7 @@ describe("alert delivery", () => {
     const payload = JSON.parse(received[0]!.body);
     expect(payload).toMatchObject({ type: "neuradash.alert", rule: "delivered", metric: "events" });
     const [after] = await listAlertEvents(acmeTenantId, 1);
-    expect(after.delivered).toBe(true);
+    expect(after!.delivered).toBe(true);
   });
 
   it("marks undelivered when the webhook is unreachable", async () => {
@@ -173,11 +173,11 @@ describe("alert delivery", () => {
     await ingest({ events: [{ type: "signup" }] });
     const [evt] = await listAlertEvents(acmeTenantId, 1);
     await deliverAlert(acmeTenantId, {
-      ruleId: rule.id, alertEventId: evt.id, name: rule.name, metric: "events",
+      ruleId: rule.id, alertEventId: evt!.id, name: rule.name, metric: "events",
       op: ">=", threshold: 1, observed: 1, webhookUrl: rule.webhookUrl,
     });
     const [after] = await listAlertEvents(acmeTenantId, 1);
-    expect(after.delivered).toBe(false);
+    expect(after!.delivered).toBe(false);
   });
 });
 
@@ -233,7 +233,7 @@ describe("alert delivery retries", () => {
       expect(await sweepAlertRetries()).toBeGreaterThanOrEqual(1);
       const [after] = await listAlertEvents(acmeTenantId, 1);
       expect(after!).toMatchObject({ id: evt!.id, delivered: true, attempts: 2 });
-      expect(after.nextAttemptAt).toBeNull();
+      expect(after!.nextAttemptAt).toBeNull();
       expect(calls).toBe(2);
     } finally {
       await new Promise((r) => flaky.close(r));
@@ -272,6 +272,6 @@ describe("alert delivery retries", () => {
     const after = events.find((e) => e.id === evt!.id)!;
     expect(after.attempts).toBe(5);
     expect(after.delivered).toBe(false);
-    expect(after.nextAttemptAt).toBeNull();
+    expect(after!.nextAttemptAt).toBeNull();
   });
 });

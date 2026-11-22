@@ -1,4 +1,5 @@
 import { AppHeader } from "@/components/app-header";
+import { MfaForm } from "@/components/mfa-form";
 import { PasswordForm } from "@/components/password-form";
 import { requirePageSession } from "@/lib/auth/current";
 
@@ -17,6 +18,7 @@ async function Account() {
         <h1 className="text-xl font-semibold">Account</h1>
         <p className="mt-1 text-sm text-slate-400">{session.email}</p>
         <PasswordForm />
+        <MfaForm />
       </main>
     </>
   );

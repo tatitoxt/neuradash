@@ -20,7 +20,7 @@ type Conn = { ws: WebSocket; messages: ServerMessage[]; next(pred: (m: ServerMes
 
 async function token(email: string): Promise<string> {
   const r = await login(email, DEMO_PASSWORD);
-  if (!r.ok) throw new Error("login failed");
+  if (!r.ok || "mfa" in r) throw new Error("login failed");
   return r.token;
 }
 
