@@ -4,7 +4,7 @@ import { login } from "./helpers";
 test("a viewer cannot reach admin actions", async ({ page, baseURL }) => {
   await login(page, "viewer@acme.test");
   await expect(page.getByTestId("user-role")).toHaveText("viewer");
-  await expect(page.getByRole("link", { name: "Admin" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Admin", exact: true })).toHaveCount(0);
 
   await page.goto("/admin");
   await expect(page.getByRole("heading", { name: /403/ })).toBeVisible();
@@ -17,7 +17,7 @@ test("a viewer cannot reach admin actions", async ({ page, baseURL }) => {
 
 test("an admin creates an API key, uses it, and revokes it", async ({ page }) => {
   await login(page, "admin@acme.test");
-  await page.getByRole("link", { name: "Admin" }).click();
+  await page.getByRole("link", { name: "Admin", exact: true }).click();
   await page.getByLabel("Key name").fill("e2e key");
   await page.getByRole("button", { name: "Create key" }).click();
   const key = (await page.getByTestId("new-api-key").textContent())!;

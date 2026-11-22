@@ -4,6 +4,8 @@ import { ACME_KEY, GLOBEX_KEY, ingest, login, uniqueSource } from "./helpers";
 test("an ingested event appears live without reloading, and other tenants' events do not", async ({ page }) => {
   await login(page, "admin@acme.test");
   await page.getByRole("link", { name: "15m" }).click();
+  // Wait for the 15m dashboard to replace the default one before reading its KPI.
+  await expect(page.getByRole("heading", { name: "Last 15 min" })).toBeVisible();
   await expect(page.getByTestId("live-status")).toHaveText("live");
   const eventsBefore = Number((await page.getByTestId("kpi-events-value").textContent())!.replace(/,/g, ""));
 
