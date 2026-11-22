@@ -28,7 +28,7 @@ export function AppHeader({ session }: { session: Session }) {
           <span data-testid="user-role" className="rounded bg-slate-800 px-2 py-0.5 text-xs uppercase text-slate-400">
             {session.role}
           </span>
-          <Link href="/account" className="hidden text-slate-500 hover:text-slate-200 sm:inline">
+          <Link href="/account" className="inline-block max-w-[9rem] truncate text-slate-500 hover:text-slate-200 sm:max-w-none">
             {session.email}
           </Link>
           <LogoutButton />

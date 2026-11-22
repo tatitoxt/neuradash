@@ -5,6 +5,8 @@ import { events, type EventRow } from "@/lib/db/schema";
 import type { IngestEvent } from "@/lib/ingest/schema";
 import type { EventDTO } from "@/lib/live/types";
 
+
+const NOTIFY_IDS_PER_MESSAGE = 200;
 export const EVENTS_CHANNEL = "neuradash_events";
 export const BACKFILL_LIMIT = 500;
 
@@ -65,8 +67,11 @@ export async function insertEvents(
           sources = (select array_agg(distinct s) from unnest(metric_rollups.sources || excluded.sources) s)`);
     }
     if (firedOut) await evaluateAlertRules(tx, tenantId, [...byMinute.keys()], firedOut);
-    const payload = JSON.stringify({ tenantId, ids: rows.map((r) => r.id) });
-    await tx.execute(sql`select pg_notify(${EVENTS_CHANNEL}, ${payload})`);
+    // pg_notify payloads are capped at 8000 bytes; chunk ids so large batches stay well under it.
+    for (let i = 0; i < rows.length; i += NOTIFY_IDS_PER_MESSAGE) {
+      const ids = rows.slice(i, i + NOTIFY_IDS_PER_MESSAGE).map((r) => r.id);
+      await tx.execute(sql`select pg_notify(${EVENTS_CHANNEL}, ${JSON.stringify({ tenantId, ids })})`);
+    }
     return rows.map(toDTO);
   });
 }
