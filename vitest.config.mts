@@ -8,6 +8,8 @@ const testDatabaseEnv = {
   DATABASE_URL:
     process.env.TEST_DATABASE_URL ?? "postgres://neuradash_app:app-password-change-me@localhost:5432/neuradash_test",
   DATABASE_OWNER_URL: process.env.TEST_DATABASE_OWNER_URL ?? "postgres://postgres:postgres@localhost:5432/neuradash_test",
+  // Alert tests post to local webhook sinks on 127.0.0.1.
+  ALERT_WEBHOOK_ALLOW_PRIVATE: "true",
 };
 // globalSetup runs in the main process, so expose the same values there.
 if (process.argv.some((a) => a.includes("integration"))) Object.assign(process.env, testDatabaseEnv);
