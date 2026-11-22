@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { changePassword } from "@/lib/auth/session";
 import { apiError, json, readJson, requireSession } from "@/lib/http";
+import { consumeLoginAttempt, resetLoginAttempts } from "@/lib/data/login-rate-limit";
 
 const bodySchema = z.object({
   currentPassword: z.string().min(1).max(256),
@@ -18,6 +19,9 @@ export async function POST(req: Request): Promise<Response> {
   if (!parsed.success) {
     return apiError(400, "invalid_request", "currentPassword and a newPassword of at least 10 characters are required");
   }
+  // Same limiter as login, keyed per user, so a stolen session cannot brute-force the current password.
+  const bucket = `password-check:${auth.session.userId}`;
+  if (!(await consumeLoginAttempt(bucket))) return apiError(429, "too_many_attempts", "try again in a few minutes");
   const result = await changePassword(auth.session, parsed.data.currentPassword, parsed.data.newPassword);
   if (result === "weak_password") {
     return apiError(400, "weak_password", "the new password must differ and be at least 10 characters");
@@ -25,5 +29,6 @@ export async function POST(req: Request): Promise<Response> {
   if (result === "invalid_current") {
     return apiError(401, "invalid_credentials", "the current password is incorrect");
   }
+  await resetLoginAttempts(bucket);
   return json({ changed: true });
 }
