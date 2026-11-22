@@ -1,4 +1,4 @@
-import { apiError, json, readJson, requireSession } from "@/lib/http";
+import { apiError, json, readJson, jsonObject, requireSession } from "@/lib/http";
 import {
   ALERT_METRICS,
   ALERT_OPS,
@@ -28,7 +28,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const parsed = await readJson(req, 8 * 1024);
   if (!parsed.ok) return parsed.response;
-  const body = parsed.body as Record<string, unknown>;
+  const body = jsonObject(parsed.body);
   const name = typeof body.name === "string" ? body.name.trim() : "";
   const webhookUrl = typeof body.webhookUrl === "string" ? body.webhookUrl : "";
   const cooldown = body.cooldownMinutes;

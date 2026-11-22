@@ -1,4 +1,4 @@
-import { apiError, json, readJson, requireSession } from "@/lib/http";
+import { apiError, json, readJson, jsonObject, requireSession } from "@/lib/http";
 import { removeMember, updateMemberRole } from "@/lib/data/members";
 import type { Role } from "@/lib/db/schema";
 
@@ -11,7 +11,7 @@ type Ctx = { params: Promise<{ id: string }> };
 export async function PATCH(req: Request, ctx: Ctx): Promise<Response> {
   const auth = await requireSession(req, { role: "admin", mutation: true });
   if (!auth.ok) return auth.response;
-  const { id } = await ctx.params;
+  const id = (await ctx.params).id.toLowerCase();
   if (!UUID.test(id)) return apiError(404, "not_found");
   if (id === auth.session.userId) {
     return apiError(422, "self_change", "admins cannot change their own role");
@@ -19,7 +19,7 @@ export async function PATCH(req: Request, ctx: Ctx): Promise<Response> {
 
   const parsed = await readJson(req, 4 * 1024);
   if (!parsed.ok) return parsed.response;
-  const body = parsed.body as { role?: unknown };
+  const body = jsonObject(parsed.body);
   if (typeof body.role !== "string" || !ROLES.includes(body.role as Role)) {
     return apiError(422, "invalid_body", "expected {role: admin|viewer}");
   }
@@ -34,7 +34,7 @@ export async function PATCH(req: Request, ctx: Ctx): Promise<Response> {
 export async function DELETE(req: Request, ctx: Ctx): Promise<Response> {
   const auth = await requireSession(req, { role: "admin", mutation: true });
   if (!auth.ok) return auth.response;
-  const { id } = await ctx.params;
+  const id = (await ctx.params).id.toLowerCase();
   if (!UUID.test(id)) return apiError(404, "not_found");
   if (id === auth.session.userId) {
     return apiError(422, "self_remove", "admins cannot remove themselves");

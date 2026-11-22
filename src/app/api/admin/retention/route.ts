@@ -1,4 +1,4 @@
-import { apiError, json, readJson, requireSession } from "@/lib/http";
+import { apiError, json, readJson, requireSession, jsonObject } from "@/lib/http";
 import { getRetentionDays, setRetentionDays } from "@/lib/data/retention";
 
 export async function GET(req: Request): Promise<Response> {
@@ -14,7 +14,7 @@ export async function PUT(req: Request): Promise<Response> {
 
   const parsed = await readJson(req, 4 * 1024);
   if (!parsed.ok) return parsed.response;
-  const days = (parsed.body as { retentionDays?: unknown }).retentionDays;
+  const days = jsonObject(parsed.body).retentionDays;
   if (days !== null && (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 3650)) {
     return apiError(422, "invalid_retention", "retentionDays must be an integer 1..3650 or null");
   }

@@ -86,6 +86,11 @@ export async function requireReadAccess(
   return { ok: true, tenantId: session.session.tenantId };
 }
 
+/** A parsed JSON body as a field map; `null`, arrays and primitives become `{}` so field validation rejects them. */
+export function jsonObject(body: unknown): Record<string, unknown> {
+  return typeof body === "object" && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+}
+
 export async function readJson(req: Request, maxBytes: number): Promise<{ ok: true; body: unknown } | { ok: false; response: Response }> {
   const length = Number(req.headers.get("content-length") ?? 0);
   if (length > maxBytes) return { ok: false, response: apiError(413, "payload_too_large") };

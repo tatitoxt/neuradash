@@ -1,4 +1,4 @@
-import { readJson, requireSession, apiError, json, sessionTokenFrom } from "@/lib/http";
+import { readJson, requireSession, apiError, json, sessionTokenFrom, jsonObject } from "@/lib/http";
 import { switchTenant } from "@/lib/auth/session";
 
 /** POST {tenant: slug} — re-points the current session at another of the user's tenants. */
@@ -8,7 +8,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const parsed = await readJson(req, 4 * 1024);
   if (!parsed.ok) return parsed.response;
-  const body = parsed.body as { tenant?: unknown };
+  const body = jsonObject(parsed.body);
   if (typeof body.tenant !== "string") {
     return apiError(422, "invalid_body", "expected {tenant: slug}");
   }

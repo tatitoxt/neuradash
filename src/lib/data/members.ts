@@ -50,8 +50,26 @@ export async function inviteMember(
 
   // memberships is tenant-scoped under RLS: run inside the tenant context.
   return withTenant(tenantId, async (tx) => {
-    const [existing] = await tx.select().from(users).where(eq(users.email, email)).limit(1);
-    if (existing) {
+    let [existing] = await tx.select().from(users).where(eq(users.email, email)).limit(1);
+    let temporaryPassword: string | null = null;
+    if (!existing) {
+      temporaryPassword = generateSessionToken().slice(0, 16);
+      const passwordHash = await hashPassword(temporaryPassword);
+      // Another tenant may create the same account concurrently; then join that account instead.
+      const [created] = await tx
+        .insert(users)
+        .values({ email, name, passwordHash })
+        .onConflictDoNothing({ target: users.email })
+        .returning();
+      if (created) {
+        await tx.insert(memberships).values({ tenantId, userId: created.id, role: input.role });
+        return { ok: true as const, member: { userId: created.id, email, name, role: input.role }, temporaryPassword };
+      }
+      temporaryPassword = null;
+      [existing] = await tx.select().from(users).where(eq(users.email, email)).limit(1);
+      if (!existing) throw new Error("user vanished after email conflict");
+    }
+    {
       const [already] = await tx
         .select({ userId: memberships.userId })
         .from(memberships)
@@ -59,14 +77,8 @@ export async function inviteMember(
         .limit(1);
       if (already) return { ok: false as const, reason: "already_member" as const };
       await tx.insert(memberships).values({ tenantId, userId: existing.id, role: input.role });
-      return { ok: true as const, member: { userId: existing.id, email, name: existing.name, role: input.role }, temporaryPassword: null };
+      return { ok: true as const, member: { userId: existing.id, email, name: existing.name, role: input.role }, temporaryPassword };
     }
-
-    const temporaryPassword = generateSessionToken().slice(0, 16);
-    const passwordHash = await hashPassword(temporaryPassword);
-    const [user] = await tx.insert(users).values({ email, name, passwordHash }).returning();
-    await tx.insert(memberships).values({ tenantId, userId: user!.id, role: input.role });
-    return { ok: true as const, member: { userId: user!.id, email, name, role: input.role }, temporaryPassword };
   });
 }
 
