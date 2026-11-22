@@ -1,7 +1,7 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { alertEvents, alertRules } from "@/lib/db/schema";
 import type { Tx } from "@/lib/db/client";
-import { withTenant } from "@/lib/db/client";
+import { getDb, withTenant } from "@/lib/db/client";
 
 export const ALERT_METRICS = ["events", "errors", "revenue", "error_rate"] as const;
 export const ALERT_OPS = [">", ">=", "<", "<="] as const;
@@ -129,12 +129,29 @@ export async function evaluateAlertRules(
   }
 }
 
-/** POSTs the alert payload to the rule's webhook; delivery failures are recorded, never raised. */
-export async function deliverAlert(tenantId: string, alert: FiredAlert): Promise<void> {
-  let delivered = false;
+/** Max deliveries per alert event; afterwards next_attempt_at stays NULL (dead-lettered). */
+export const MAX_ALERT_ATTEMPTS = 5;
+
+/** Delay before retry n+1, indexed by the attempt that just failed (1-based). */
+const RETRY_DELAYS_MS = [30_000, 120_000, 480_000, 1_920_000];
+
+function nextRetryAt(attempts: number): Date | null {
+  if (attempts >= MAX_ALERT_ATTEMPTS) return null;
+  return new Date(Date.now() + RETRY_DELAYS_MS[Math.min(attempts, RETRY_DELAYS_MS.length) - 1]!);
+}
+
+/** POSTs the alert payload; resolves to whether the webhook accepted it. */
+async function postAlertWebhook(alert: {
+  name: string;
+  metric: AlertMetric;
+  op: AlertOp;
+  threshold: number;
+  observed: number;
+  webhookUrl: string;
+}): Promise<boolean> {
   try {
     const url = new URL(alert.webhookUrl);
-    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("scheme");
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
     const res = await fetch(alert.webhookUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -148,16 +165,81 @@ export async function deliverAlert(tenantId: string, alert: FiredAlert): Promise
       }),
       signal: AbortSignal.timeout(3_000),
     });
-    delivered = res.ok;
+    return res.ok;
   } catch {
-    delivered = false;
+    return false;
   }
+}
+
+/** First delivery attempt right after a rule fires; schedules a retry on failure. */
+export async function deliverAlert(tenantId: string, alert: FiredAlert): Promise<void> {
+  const delivered = await postAlertWebhook(alert);
+  const now = new Date();
   await withTenant(tenantId, async (tx) => {
     await tx
       .update(alertEvents)
-      .set({ delivered })
+      .set({
+        delivered,
+        attempts: 1,
+        deliveredAt: delivered ? now : null,
+        nextAttemptAt: delivered ? null : nextRetryAt(1),
+      })
       .where(eq(alertEvents.id, alert.alertEventId));
   });
+}
+
+/**
+ * Retries undelivered alert events whose backoff elapsed. Runs per tenant so
+ * RLS is honored; rows are claimed `FOR UPDATE SKIP LOCKED`, so concurrent
+ * sweepers on multiple instances never double-deliver. Delivers inside the
+ * transaction: a crashed sweeper just releases its locks and the rows stay due.
+ */
+export async function sweepAlertRetries(limitPerTenant = 10): Promise<number> {
+  const db = getDb();
+  const tenants = await db.execute<{ tenant_id: string }>(
+    sql`select tenant_id from tenants_with_due_alert_retries() as t(tenant_id)`,
+  );
+  let retried = 0;
+  for (const { tenant_id: tenantId } of tenants.rows) {
+    retried += await withTenant(tenantId, async (tx) => {
+      const rows = await tx.execute<{
+        id: string; attempts: number; name: string; metric: string; op: string;
+        threshold: number; observed: number; webhook_url: string;
+      }>(sql`
+        select e.id, e.attempts, r.name, r."op", r.webhook_url, e.metric, e.observed, e.threshold
+        from alert_events e join alert_rules r on r.id = e.rule_id
+        where not e.delivered and e.next_attempt_at is not null
+          and e.next_attempt_at <= now() and r.enabled
+        order by e.id
+        limit ${limitPerTenant}
+        for update of e skip locked`);
+      let done = 0;
+      for (const row of rows.rows) {
+        const attempts = Number(row.attempts) + 1;
+        const delivered = await postAlertWebhook({
+          name: row.name,
+          metric: row.metric as AlertMetric,
+          op: row.op as AlertOp,
+          threshold: row.threshold,
+          observed: row.observed,
+          webhookUrl: row.webhook_url,
+        });
+        const now = new Date();
+        await tx
+          .update(alertEvents)
+          .set({
+            delivered,
+            attempts,
+            deliveredAt: delivered ? now : null,
+            nextAttemptAt: delivered ? null : nextRetryAt(attempts),
+          })
+          .where(eq(alertEvents.id, Number(row.id)));
+        done += 1;
+      }
+      return done;
+    });
+  }
+  return retried;
 }
 
 export async function listAlertRules(tenantId: string): Promise<AlertRuleDTO[]> {
@@ -251,6 +333,8 @@ export interface AlertEventDTO {
   observed: number;
   threshold: number;
   delivered: boolean;
+  attempts: number;
+  nextAttemptAt: string | null;
   firedAt: string;
 }
 
@@ -272,6 +356,8 @@ export async function listAlertEvents(tenantId: string, limit = 50): Promise<Ale
     observed: r.evt.observed,
     threshold: r.evt.threshold,
     delivered: r.evt.delivered,
+    attempts: r.evt.attempts,
+    nextAttemptAt: r.evt.nextAttemptAt?.toISOString() ?? null,
     firedAt: r.evt.firedAt.toISOString(),
   }));
 }

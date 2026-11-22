@@ -183,7 +183,7 @@ CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs lint, typecheck, 
 - **API keys carry `ingest` and/or `read` scopes**: `ingest` writes events; `read`
   authorizes `GET /api/metrics` and `GET /api/events` without a session. Admin/member
   management still requires a session.
-- **Alert delivery is best-effort**: a firing is recorded transactionally, but the webhook POST happens after commit with one attempt and no retry; `delivered=false` on an `alert_events` row marks the failure.
+- **Alert delivery retries with backoff**: a firing is recorded transactionally; the webhook POST happens after commit and, on failure, `next_attempt_at` schedules a retry (30s → 2m → 8m → 32m, max 5 attempts, then dead-lettered). A sweeper in `server.ts` claims due rows `FOR UPDATE SKIP LOCKED` per tenant, so several instances can sweep concurrently without double-delivering.
 - **Docker image still ships `tsx` and the prod `node_modules`** (the custom server and db scripts run through it); devDependencies are excluded via the multi-stage build. It is meant for local demos, not production.
 - **`npm audit`** reports 4 moderate advisories in `drizzle-kit`'s transitive `@esbuild-kit/*` packages (dev-only migration generator, not used at runtime). There are no high or critical findings; CI fails on high/critical.
 - The demo API keys and passwords are intentionally public and for local use only.
