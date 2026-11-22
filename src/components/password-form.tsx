@@ -14,12 +14,19 @@ export function PasswordForm() {
     e.preventDefault();
     setBusy(true);
     setStatus(null);
-    const res = await fetch("/api/me/password", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ currentPassword: current, newPassword: next }),
-    });
-    setBusy(false);
+    let res: Response;
+    try {
+      res = await fetch("/api/me/password", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ currentPassword: current, newPassword: next }),
+      });
+    } catch {
+      setStatus({ kind: "err", text: "Network error — try again" });
+      return;
+    } finally {
+      setBusy(false);
+    }
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { message?: string };
       setStatus({ kind: "err", text: body.message ?? "Password change failed" });

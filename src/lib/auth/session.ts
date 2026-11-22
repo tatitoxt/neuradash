@@ -1,6 +1,6 @@
 import { and, eq, gt, ne, sql } from "drizzle-orm";
 import { getDb, withTenant, withUser } from "@/lib/db/client";
-import { memberships, sessions, tenants, users, type Role } from "@/lib/db/schema";
+import { memberships, mfaChallenges, sessions, tenants, users, type Role } from "@/lib/db/schema";
 import { consumeMfaChallenge, createMfaChallenge, mfaEnabled } from "./mfa";
 import { hashPassword, verifyPassword } from "./password";
 import { generateSessionToken, sha256Hex } from "./tokens";
@@ -58,7 +58,7 @@ export async function login(email: string, password: string, tenantSlug?: string
     const challenge = await createMfaChallenge(user.id, membership.slug);
     return { ok: true, mfa: true, challenge };
   }
-  return createSession(user.id, membership.tenantId);
+  return createSession(user.id, membership.tenantId, user.passwordHash);
 }
 
 /** Second step of sign-in when MFA is enabled: consumes the one-shot
@@ -80,16 +80,22 @@ export async function completeMfaLogin(challenge: string, code: string): Promise
   return createSession(result.userId, membership.tenantId);
 }
 
-async function createSession(userId: string, tenantId: string): Promise<LoginResult> {
+/** `verifiedHash`: the password hash the caller checked. The session is only
+ * created while it is still current, so a login that verified the old
+ * password cannot outlive a concurrent password change. */
+async function createSession(userId: string, tenantId: string, verifiedHash?: string): Promise<LoginResult> {
   const db = getDb();
   const token = generateSessionToken();
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-  await db.insert(sessions).values({
-    tokenHash: sha256Hex(token),
-    userId,
-    tenantId,
-    expiresAt,
-  });
+  if (verifiedHash === undefined) {
+    await db.insert(sessions).values({ tokenHash: sha256Hex(token), userId, tenantId, expiresAt });
+  } else {
+    const inserted = await db.execute(sql`
+      insert into sessions (token_hash, user_id, tenant_id, expires_at)
+      select ${sha256Hex(token)}, ${userId}::uuid, ${tenantId}::uuid, ${expiresAt}
+      where exists (select 1 from users where id = ${userId}::uuid and password_hash = ${verifiedHash})`);
+    if (inserted.rowCount !== 1) return { ok: false, reason: "invalid_credentials" };
+  }
   const session = await getSession(token);
   if (!session) throw new Error("session vanished right after creation");
   return { ok: true, token, session };
@@ -208,12 +214,15 @@ export async function changePassword(
     .limit(1);
   if (!user || !(await verifyPassword(current, user.passwordHash))) return "invalid_current";
   const passwordHash = await hashPassword(next);
+  // Compare-and-swap on the verified hash: of two overlapping changes only one wins.
   const res = await getDb().execute<{ changed: boolean }>(
-    sql`select change_user_password(${session.userId}::uuid, ${passwordHash}) as changed`,
+    sql`select change_user_password(${session.userId}::uuid, ${user.passwordHash}, ${passwordHash}) as changed`,
   );
   if (!res.rows[0]?.changed) return "invalid_current";
   await getDb()
     .delete(sessions)
     .where(and(eq(sessions.userId, session.userId), ne(sessions.id, session.sessionId)));
+  // Pending MFA logins were authorized by the old password.
+  await getDb().delete(mfaChallenges).where(eq(mfaChallenges.userId, session.userId));
   return "ok";
 }

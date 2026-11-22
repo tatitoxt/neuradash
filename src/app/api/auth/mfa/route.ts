@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { completeMfaLogin, serializeSessionCookie } from "@/lib/auth/session";
 import { apiError, isSameOrigin, json, readJson } from "@/lib/http";
+import { resetLoginAttempts } from "@/lib/data/login-rate-limit";
 
 const bodySchema = z.object({
   challenge: z.string().min(1).max(256),
@@ -35,6 +36,7 @@ export async function POST(req: Request): Promise<Response> {
     return apiError(status, result.reason, message);
   }
   if ("mfa" in result) return apiError(500, "unexpected", "nested mfa challenge is not supported");
+  await resetLoginAttempts(result.session.email);
   const { tenantSlug, role, name } = result.session;
   return json({ tenant: tenantSlug, role, name }, 200, { "Set-Cookie": serializeSessionCookie(result.token) });
 }
